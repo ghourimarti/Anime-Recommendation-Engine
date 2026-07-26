@@ -1,121 +1,121 @@
-name: Eval Gate
+# name: Eval Gate
 
-# Retrieval quality is a build artifact. It gets a gate.
-#
-# This is the workflow whose absence let the reranker time out on every single
-# request for weeks: the advanced pipeline silently degraded to plain hybrid
-# order, the measured lift over naive retrieval fell to +0.000, and nothing
-# failed — because "did quality regress?" was only ever asked by a human running
-# `make eval` and reading a table.
-#
-# It is split from ci.yml because it needs a real OPENAI_API_KEY (embeddings) and
-# a live Postgres. Keeping it separate means ci.yml stays fast, keyless and
-# runnable on forks, while this one runs where the secrets exist.
-# on:
-#   pull_request:
-#     # Only for changes that can plausibly move the numbers. Running it on a README
-#     # edit just teaches people the gate is noise.
-#     paths:
-#       - "packages/retrieval/**"
-#       - "packages/eval/**"
-#       - "packages/core/src/anime_core/embeddings/**"
-#       - "packages/ingestion/**"
-#       - "evals/**"
-#       - ".github/workflows/eval-gate.yml"
-#   push:
-#     branches: [main]
-#   schedule:
-#     # Weekly. Catches drift we didn't cause: a provider silently reweighting an
-#     # embedding model degrades retrieval with no commit of ours to blame.
-#     - cron: "0 6 * * 1"
-#   workflow_dispatch:
+# # Retrieval quality is a build artifact. It gets a gate.
+# #
+# # This is the workflow whose absence let the reranker time out on every single
+# # request for weeks: the advanced pipeline silently degraded to plain hybrid
+# # order, the measured lift over naive retrieval fell to +0.000, and nothing
+# # failed — because "did quality regress?" was only ever asked by a human running
+# # `make eval` and reading a table.
+# #
+# # It is split from ci.yml because it needs a real OPENAI_API_KEY (embeddings) and
+# # a live Postgres. Keeping it separate means ci.yml stays fast, keyless and
+# # runnable on forks, while this one runs where the secrets exist.
+# # on:
+# #   pull_request:
+# #     # Only for changes that can plausibly move the numbers. Running it on a README
+# #     # edit just teaches people the gate is noise.
+# #     paths:
+# #       - "packages/retrieval/**"
+# #       - "packages/eval/**"
+# #       - "packages/core/src/anime_core/embeddings/**"
+# #       - "packages/ingestion/**"
+# #       - "evals/**"
+# #       - ".github/workflows/eval-gate.yml"
+# #   push:
+# #     branches: [main]
+# #   schedule:
+# #     # Weekly. Catches drift we didn't cause: a provider silently reweighting an
+# #     # embedding model degrades retrieval with no commit of ours to blame.
+# #     - cron: "0 6 * * 1"
+# #   workflow_dispatch:
 
-concurrency:
-  group: eval-${{ github.ref }}
-  cancel-in-progress: true
+# concurrency:
+#   group: eval-${{ github.ref }}
+#   cancel-in-progress: true
 
-permissions:
-  contents: read
+# permissions:
+#   contents: read
 
-jobs:
-  eval:
-    name: retrieval quality vs baseline
-    runs-on: ubuntu-latest
+# jobs:
+#   eval:
+#     name: retrieval quality vs baseline
+#     runs-on: ubuntu-latest
 
-    services:
-      postgres:
-        # pgvector image, not plain postgres — the schema needs the vector type.
-        image: pgvector/pgvector:pg16
-        env:
-          POSTGRES_USER: anime
-          POSTGRES_PASSWORD: anime
-          POSTGRES_DB: anime
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd "pg_isready -U anime"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
+#     services:
+#       postgres:
+#         # pgvector image, not plain postgres — the schema needs the vector type.
+#         image: pgvector/pgvector:pg16
+#         env:
+#           POSTGRES_USER: anime
+#           POSTGRES_PASSWORD: anime
+#           POSTGRES_DB: anime
+#         ports: ["5432:5432"]
+#         options: >-
+#           --health-cmd "pg_isready -U anime"
+#           --health-interval 5s
+#           --health-timeout 5s
+#           --health-retries 10
 
-    env:
-      DATABASE_URL: postgresql+asyncpg://anime:anime@localhost:5432/anime
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      OTEL_SDK_DISABLED: "true"
-      # Must match the model baked into the API image, or CI measures a pipeline
-      # that isn't the one we ship.
-      RERANKER_MODEL: cross-encoder/ms-marco-MiniLM-L-12-v2
-      # CI runners are slower and colder than a warm pod. A tight timeout here
-      # would make the gate flaky — and a flaky quality gate gets ignored, which
-      # is how we got here. Latency is enforced by the k6 SLO check, not this job.
-      RERANK_TIMEOUT: "10.0"
-      PYTHONIOENCODING: utf-8
+#     env:
+#       DATABASE_URL: postgresql+asyncpg://anime:anime@localhost:5432/anime
+#       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+#       OTEL_SDK_DISABLED: "true"
+#       # Must match the model baked into the API image, or CI measures a pipeline
+#       # that isn't the one we ship.
+#       RERANKER_MODEL: cross-encoder/ms-marco-MiniLM-L-12-v2
+#       # CI runners are slower and colder than a warm pod. A tight timeout here
+#       # would make the gate flaky — and a flaky quality gate gets ignored, which
+#       # is how we got here. Latency is enforced by the k6 SLO check, not this job.
+#       RERANK_TIMEOUT: "10.0"
+#       PYTHONIOENCODING: utf-8
 
-    steps:
-      - uses: actions/checkout@v4
+#     steps:
+#       - uses: actions/checkout@v4
 
-      - name: Check the key is present
-        run: |
-          if [ -z "${OPENAI_API_KEY}" ]; then
-            echo "::error::OPENAI_API_KEY is not set. The eval gate needs real embeddings —"
-            echo "::error::it cannot be faked, and skipping it silently is what let the"
-            echo "::error::reranker regression ship. Add the secret to this repo."
-            exit 1
-          fi
+#       - name: Check the key is present
+#         run: |
+#           if [ -z "${OPENAI_API_KEY}" ]; then
+#             echo "::error::OPENAI_API_KEY is not set. The eval gate needs real embeddings —"
+#             echo "::error::it cannot be faked, and skipping it silently is what let the"
+#             echo "::error::reranker regression ship. Add the secret to this repo."
+#             exit 1
+#           fi
 
-      - uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-          cache-dependency-glob: uv.lock
+#       - uses: astral-sh/setup-uv@v5
+#         with:
+#           enable-cache: true
+#           cache-dependency-glob: uv.lock
 
-      - run: uv sync --frozen --all-packages
+#       - run: uv sync --frozen --all-packages
 
-      # The cross-encoder is ~130MB. Cache it so the gate stays quick and doesn't
-      # hammer HuggingFace on every run.
-      - name: Cache reranker weights
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/huggingface
-          key: hf-${{ env.RERANKER_MODEL }}
+#       # The cross-encoder is ~130MB. Cache it so the gate stays quick and doesn't
+#       # hammer HuggingFace on every run.
+#       - name: Cache reranker weights
+#         uses: actions/cache@v4
+#         with:
+#           path: ~/.cache/huggingface
+#           key: hf-${{ env.RERANKER_MODEL }}
 
-      - name: Migrate
-        run: uv run alembic upgrade head
+#       - name: Migrate
+#         run: uv run alembic upgrade head
 
-      - name: Ingest corpus
-        run: uv run python -m anime_ingestion.cli --csv data/anime_with_synopsis.csv --skip-latency
+#       - name: Ingest corpus
+#         run: uv run python -m anime_ingestion.cli --csv data/anime_with_synopsis.csv --skip-latency
 
-      - name: Run eval (naive vs advanced)
-        run: uv run python -m anime_eval.cli --json eval_report.json
+#       - name: Run eval (naive vs advanced)
+#         run: uv run python -m anime_eval.cli --json eval_report.json
 
-      # The gate. Two checks: no regression vs the frozen baseline, AND the advanced
-      # pipeline must still beat naive. The second is the one that catches a dead
-      # reranker — a broken advanced stage degrades to ~naive, which can sit inside
-      # the regression tolerance while the whole advanced pipeline does nothing.
-      - name: Gate
-        run: uv run python -m anime_eval.compare --baseline evals/baseline.json --candidate eval_report.json
+#       # The gate. Two checks: no regression vs the frozen baseline, AND the advanced
+#       # pipeline must still beat naive. The second is the one that catches a dead
+#       # reranker — a broken advanced stage degrades to ~naive, which can sit inside
+#       # the regression tolerance while the whole advanced pipeline does nothing.
+#       - name: Gate
+#         run: uv run python -m anime_eval.compare --baseline evals/baseline.json --candidate eval_report.json
 
-      - name: Upload report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: eval-report
-          path: eval_report.json
+#       - name: Upload report
+#         if: always()
+#         uses: actions/upload-artifact@v4
+#         with:
+#           name: eval-report
+#           path: eval_report.json
