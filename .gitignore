@@ -91,7 +91,6 @@ load_report.json
 # Local-only reference material (not part of the published project)
 Prompts/
 demo/
-data/
 docs/
 
 # Local-only planning / working notes — kept on disk, excluded from the repo.

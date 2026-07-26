@@ -1,0 +1,29 @@
+# Enforce LF line endings for all text files in this repository.
+#
+# Why this exists:
+#   This repo runs the `mixed-line-ending --fix=lf` pre-commit hook
+#   (see .pre-commit-config.yaml). On Windows, `core.autocrlf=true` checks
+#   files out as CRLF; the hook then rewrites them to LF at commit time and
+#   exits non-zero, blocking the commit. Pinning `eol=lf` here overrides
+#   core.autocrlf so the working tree and the repository always agree on LF,
+#   regardless of platform or each contributor's git config.
+
+* text=auto eol=lf
+
+# Binary files: never normalize or touch their bytes.
+*.png          binary
+*.jpg          binary
+*.jpeg         binary
+*.gif          binary
+*.ico          binary
+*.webp         binary
+*.pdf          binary
+*.zip          binary
+*.gz           binary
+*.parquet      binary
+*.npy          binary
+*.npz          binary
+*.bin          binary
+*.pt           binary
+*.onnx         binary
+*.safetensors  binary
