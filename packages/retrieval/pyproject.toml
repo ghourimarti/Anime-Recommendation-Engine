@@ -7,7 +7,7 @@ requires-python = ">=3.13,<3.14"
 dependencies = [
     "anime-core",
     "sentence-transformers>=3.0",
-    "numpy>=2.0",
+    "numpy>=2.5.1",
 ]
 
 [build-system]
