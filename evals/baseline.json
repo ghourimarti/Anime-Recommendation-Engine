@@ -1,0 +1,20 @@
+{
+  "embedding_model": "text-embedding-3-small",
+  "generated_at": "2026-07-14",
+  "metrics": {
+    "success@1": 0.6534653465346535,
+    "precision@1": 0.6534653465346535,
+    "recall@1": 0.5707213578500707,
+    "ndcg@1": 0.6534653465346535,
+    "success@3": 0.8514851485148515,
+    "precision@3": 0.3069306930693069,
+    "recall@3": 0.7456388495992456,
+    "ndcg@3": 0.7033786114755208,
+    "mrr": 0.740924092409241,
+    "distinct_ratio": 1.0
+  },
+  "ragas": null,
+  "notes": "Baseline of the advanced retrieval pipeline (hybrid + cross-encoder rerank + MMR), measured on golden set v1 at 111 queries (101 scored + 10 adversarial). RE-BASELINED 2026-07-14: the previous baseline was measured on 24 queries (22 scored), where a single query moved any metric by 4.5 points \u2014 too coarse to distinguish a real regression from noise, and the reason the earlier '+0.045' lift was really just 'one query moved'. At 101 scored queries one query is ~1 point, so the gate is ~4.6x more sensitive. The absolute numbers are NOT comparable to the pre-2026-07-14 baseline: the measurement set changed, which is not a regression. Reranker: cross-encoder/ms-marco-MiniLM-L-12-v2. Update via `make eval EVAL_ARGS='--json eval_report.json' && uv run python scripts/eval_promote.py` on an intentional, reviewed metric shift.",
+  "golden_set_size": 111,
+  "scored_queries": 101
+}
