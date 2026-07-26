@@ -1,0 +1,15 @@
+# actionlint config — https://github.com/rhysd/actionlint
+# Local install:   scoop install actionlint   (Win)
+#                  brew install actionlint    (macOS)
+# Run:             actionlint .github/workflows/*.yml
+# Pre-commit hook is intentionally NOT wired here — too disruptive on first
+# install. Run it before pushing changes to any workflow file.
+
+self-hosted-runner:
+  labels: []
+
+# Pin shellcheck version explicitly so YAML expressions matched by actionlint
+# get the same shell linting locally as in CI.
+config-variables:
+  - AWS_DEPLOY_ROLE_ARN
+  - ECR_REGISTRY
