@@ -2,7 +2,7 @@
 
 # Anime Recommender — Conversational RAG for Anime Discovery
 
-### Grounded Anime Recommendations from Natural-Language Taste, at Production Scale
+### Grounded Anime Recommendations from Natural-Language Taste
 
 [![Python](https://img.shields.io/badge/Python-3.13-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-async%20%2B%20SSE-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
@@ -157,8 +157,8 @@ Full walk-through with Mermaid diagrams: **[`docs/architecture.md`](docs/archite
 ## 🗂️ Project Structure
 
 ```
-P1-Video-SEO-Engine/                       # uv workspace (monorepo). NOTE: repo folder name is
-│                                          # incidental — the product is an anime recommender.
+P1-Video-SEO-Engine/                 
+│                   
 ├── apps/
 │   ├── api/        # FastAPI: /v1/recommend(+stream) /v1/feedback /v1/history /v1/account
 │   │              # /health /ready · auth · quotas · cost meter · SSE · Dockerfile (CPU torch)
@@ -527,10 +527,6 @@ account_deletions   audit trail for right-to-be-forgotten requests (migration 00
 | **Quality gate** | `make check` = **ruff clean + mypy strict + pytest** green; **CI eval gate** blocks a merge on regression vs baseline **and** requires lift over naive |
 | **Deploy** | **Local Docker verified** (3-tier compose builds + `/health` OK; `make deploy-stage1` acceptance) · **Helm** chart `helm lint` + `kubeconform` clean (dev/staging/prod) · **Terraform** `validate` clean — **authored, not applied** |
 
-> Honest framing: this is **built and demonstrated at portfolio scale with synthetic load**. The
-> architecture is designed for millions of users, but it has **not** been proven under real production
-> traffic — that distinction is deliberate.
-
 ---
 
 ## 🐳 Deployment
@@ -603,12 +599,3 @@ observability, and infrastructure-as-code.
 `GitHub Actions / ArgoCD` · `Prometheus / Grafana / Langfuse` ·
 `AWS (EKS · RDS · ElastiCache · SQS · ECR · S3)`
 
----
-
-<div align="center">
-
-**Built with ❤️ by Zain Ul Abdin**
-
-⭐ If this project helped or inspired you, a star means a lot!
-
-</div>

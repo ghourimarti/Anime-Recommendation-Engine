@@ -1,0 +1,30 @@
+{{- if .Values.ingress.enabled }}
+# Ingress: web at /, api at /v1/* (the BFF also proxies, but the
+# api path is exposed for direct API clients). TLS terminated at the ALB via ACM.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "anime.name" . }}
+  namespace: {{ .Values.namespace }}
+  labels: {{- include "anime.labels" . | nindent 4 }}
+  annotations:
+    {{- toYaml .Values.ingress.annotations | nindent 4 }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  rules:
+    - host: {{ .Values.ingress.host }}
+      http:
+        paths:
+          - path: /v1
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "anime.name" . }}-api
+                port: { number: 80 }
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "anime.name" . }}-web
+                port: { number: 80 }
+{{- end }}

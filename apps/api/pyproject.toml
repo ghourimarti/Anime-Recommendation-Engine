@@ -1,0 +1,27 @@
+[project]
+name = "anime-api"
+version = "0.1.0"
+description = "FastAPI service for anime recommendation"
+authors = [{ name = "Zain Ul Abdin" }]
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "anime-core",
+    "anime-retrieval",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic-settings>=2.5",
+    "structlog>=24.1",
+    "python-dotenv>=1.0",
+    "pyjwt[crypto]>=2.9",
+    # alembic is an OPERATIONAL dependency, not just dev: the `migrate` container
+    # (docker-compose / K8s migration job) reuses the API image and
+    # runs `alembic upgrade head`. A --no-dev image must therefore ship alembic.
+    "alembic>=1.13",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/anime_api"]

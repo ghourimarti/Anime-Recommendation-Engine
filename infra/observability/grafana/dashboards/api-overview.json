@@ -1,0 +1,269 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "graphTooltip": 0,
+  "uid": "api-overview",
+  "title": "API Overview",
+  "tags": ["anime", "auto-provisioned"],
+  "schemaVersion": 39,
+  "version": 2,
+  "refresh": "10s",
+  "time": { "from": "now-30m", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "service",
+        "label": "service",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "query": "label_values(anime_http_requests_total, service_name)",
+        "refresh": 1,
+        "current": { "text": "anime-rag-api", "value": "anime-rag-api" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "text",
+      "title": "About",
+      "gridPos": { "h": 4, "w": 24, "x": 0, "y": 0 },
+      "options": {
+        "mode": "markdown",
+        "content": "Flow: **app (OTLP push) → otel-collector:8889 → Prometheus → Grafana**. Every query below was verified against the collector's actual export, not assumed.\n\nThis dashboard was previously one panel titled *\"HTTP request rate (if instrumented)\"*, and it was empty — the app had **no MeterProvider**, so the OTel metrics API no-op'd every `counter.add()` and recorded nothing. Collector, Prometheus and Grafana were all healthy and carrying zero data.\n\n**An empty panel and a healthy system look identical.** A blank panel here means a broken pipeline until proven otherwise — not zero traffic.\n\n- **Unpriced LLM calls** must be **0**: non-zero means a model is missing from `LLM_PRICING`, so the provider bills us while we meter $0.00.\n- Health probes are excluded from these metrics, so request counts are real user traffic."
+      }
+    },
+
+    {
+      "type": "stat",
+      "title": "Request rate",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 5, "w": 5, "x": 0, "y": 4 },
+      "fieldConfig": { "defaults": { "unit": "reqps", "decimals": 2 } },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(anime_http_requests_total{service_name=\"$service\"}[5m]))"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Error rate (5xx)",
+      "description": "The SLO number. Health probes are excluded, so this is real user traffic only.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 5, "w": 5, "x": 5, "y": 4 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 1 },
+              { "color": "red", "value": 5 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "100 * sum(rate(anime_http_requests_total{service_name=\"$service\",status_class=\"5xx\"}[5m])) / clamp_min(sum(rate(anime_http_requests_total{service_name=\"$service\"}[5m])), 0.0001)"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "p95 /v1/recommend",
+      "description": "Meaningful only because the duration histogram uses SECOND-scale buckets. With OTel's millisecond-scale defaults every request landed in the first bucket and this number was fiction.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 5, "w": 5, "x": 10, "y": 4 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 3 },
+              { "color": "red", "value": 5 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum(rate(anime_http_duration_seconds_bucket{service_name=\"$service\",route=\"/v1/recommend\"}[5m])) by (le))"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "LLM spend (window)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 5, "w": 5, "x": 15, "y": 4 },
+      "fieldConfig": { "defaults": { "unit": "currencyUSD", "decimals": 5 } },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(increase(anime_llm_cost_usd_total{service_name=\"$service\"}[$__range]))"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Unpriced LLM calls",
+      "description": "MUST be zero. Non-zero = a model missing from LLM_PRICING: the provider bills us, we meter $0.00, and the spend leaks unattributed.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 5, "w": 4, "x": 20, "y": 4 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(increase(anime_llm_unpriced_calls_total{service_name=\"$service\"}[$__range])) or vector(0)"
+        }
+      ]
+    },
+
+    {
+      "type": "timeseries",
+      "title": "Request rate by route",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 9 },
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "fillOpacity": 10 } } },
+      "targets": [
+        {
+          "refId": "A",
+          "legendFormat": "{{method}} {{route}}",
+          "expr": "sum by (method, route) (rate(anime_http_requests_total{service_name=\"$service\"}[2m]))"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Responses by status class",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 9 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": { "fillOpacity": 20, "stacking": { "mode": "normal" } }
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "legendFormat": "{{status_class}}",
+          "expr": "sum by (status_class) (rate(anime_http_requests_total{service_name=\"$service\"}[2m]))"
+        }
+      ]
+    },
+
+    {
+      "type": "timeseries",
+      "title": "Latency percentiles — /v1/recommend",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 17 },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [
+        {
+          "refId": "A",
+          "legendFormat": "p50",
+          "expr": "histogram_quantile(0.50, sum(rate(anime_http_duration_seconds_bucket{service_name=\"$service\",route=\"/v1/recommend\"}[5m])) by (le))"
+        },
+        {
+          "refId": "B",
+          "legendFormat": "p95",
+          "expr": "histogram_quantile(0.95, sum(rate(anime_http_duration_seconds_bucket{service_name=\"$service\",route=\"/v1/recommend\"}[5m])) by (le))"
+        },
+        {
+          "refId": "C",
+          "legendFormat": "p99",
+          "expr": "histogram_quantile(0.99, sum(rate(anime_http_duration_seconds_bucket{service_name=\"$service\",route=\"/v1/recommend\"}[5m])) by (le))"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Outbound provider latency (p95)",
+      "description": "httpx auto-instrumentation: the Groq/OpenAI calls themselves. Separates 'the model is slow' from 'we are slow'.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 17 },
+      "fieldConfig": { "defaults": { "unit": "ms" } },
+      "targets": [
+        {
+          "refId": "A",
+          "legendFormat": "p95 {{net_peer_name}}",
+          "expr": "histogram_quantile(0.95, sum by (le, net_peer_name) (rate(http_client_duration_milliseconds_bucket{service_name=\"$service\"}[5m])))"
+        }
+      ]
+    },
+
+    {
+      "type": "timeseries",
+      "title": "LLM cost rate (USD/hour) by model",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 25 },
+      "fieldConfig": { "defaults": { "unit": "currencyUSD", "custom": { "fillOpacity": 10 } } },
+      "targets": [
+        {
+          "refId": "A",
+          "legendFormat": "{{model}}",
+          "expr": "sum by (model) (rate(anime_llm_cost_usd_total{service_name=\"$service\"}[5m])) * 3600"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Tokens/s by direction",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 25 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "fillOpacity": 10 } } },
+      "targets": [
+        {
+          "refId": "A",
+          "legendFormat": "{{model}} {{direction}}",
+          "expr": "sum by (model, direction) (rate(anime_llm_tokens_total{service_name=\"$service\"}[5m]))"
+        }
+      ]
+    },
+
+    {
+      "type": "timeseries",
+      "title": "Worker jobs by outcome",
+      "description": "processed / duplicate / failed / poison. Poison = an unparseable body sent straight to the DLQ — it used to crash-loop the worker.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 33 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "fillOpacity": 10 } } },
+      "targets": [
+        {
+          "refId": "A",
+          "legendFormat": "{{queue}} {{outcome}}",
+          "expr": "sum by (queue, outcome) (rate(anime_worker_jobs_total[5m]))"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Scrape target up (1 = healthy)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 33 },
+      "fieldConfig": { "defaults": { "unit": "short", "min": 0, "max": 1 } },
+      "targets": [{ "refId": "A", "legendFormat": "{{job}}", "expr": "up" }]
+    }
+  ]
+}

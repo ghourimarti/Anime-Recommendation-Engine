@@ -1,0 +1,62 @@
+# Argo Rollouts AnalysisTemplate: the automated canary gate. Queries Prometheus
+# over the canary window; if success-rate drops or latency blows out, the
+# Rollout aborts and rolls back to stable.
+#
+# The conditions require len(result) > 0 on purpose: an empty PromQL result
+# (e.g. a metric with no series) does not fail a successCondition by itself, so a
+# gate pointed at a metric the app never emits would silently pass while measuring
+# nothing. Requiring a non-empty result makes "couldn't measure it" a failure.
+#
+# Metric names below are the real exported ones (verified against the collector's
+# Prometheus endpoint):
+#   anime_http_requests_total{route,method,status_code,status_class,service_name}
+#   anime_http_duration_seconds_bucket{...,le}
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: {{ include "anime.name" . }}-api-success-rate
+  namespace: {{ .Values.namespace }}
+  labels: {{- include "anime.labels" . | nindent 4 }}
+spec:
+  metrics:
+    # ── 1. success rate ──────────────────────────────────────────────────────
+    - name: success-rate
+      interval: 1m
+      count: 3
+      successCondition: "len(result) > 0 && result[0] >= {{ .Values.api.canary.analysis.successRateThreshold }}"
+      failureLimit: 1
+      provider:
+        prometheus:
+          address: {{ .Values.api.canary.analysis.prometheusAddress }}
+          query: |
+            sum(rate(anime_http_requests_total{
+              service_name="{{ .Values.api.canary.analysis.serviceName }}",
+              status_class!="5xx"
+            }[2m]))
+            /
+            sum(rate(anime_http_requests_total{
+              service_name="{{ .Values.api.canary.analysis.serviceName }}"
+            }[2m]))
+
+    # ── 2. p95 latency ───────────────────────────────────────────────────────
+    # A canary can hold a perfect success rate while making every request twice as
+    # slow. Success rate alone would wave that through, so gate latency too.
+    #
+    # This is only meaningful because the duration histogram now has buckets on a
+    # SECONDS scale (see DURATION_BUCKETS_SECONDS in anime_core.observability.otel).
+    # With OTel's millisecond-scale defaults every request fell into the first
+    # bucket and histogram_quantile returned a number that looked real and meant
+    # nothing.
+    - name: p95-latency-seconds
+      interval: 1m
+      count: 3
+      successCondition: "len(result) > 0 && result[0] <= {{ .Values.api.canary.analysis.p95LatencySecondsThreshold }}"
+      failureLimit: 1
+      provider:
+        prometheus:
+          address: {{ .Values.api.canary.analysis.prometheusAddress }}
+          query: |
+            histogram_quantile(0.95, sum(rate(anime_http_duration_seconds_bucket{
+              service_name="{{ .Values.api.canary.analysis.serviceName }}",
+              route="/v1/recommend"
+            }[2m])) by (le))

@@ -1,0 +1,66 @@
+# Feedback worker — Deployment + KEDA ScaledObject. Mirrors the Helm chart's
+# worker template; kept standalone for quick validation.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: anime-worker-feedback
+  labels: { app: anime-worker, queue: feedback }
+spec:
+  # KEDA owns the replica count (see ScaledObject below). This is the floor when
+  # KEDA isn't installed / for a plain `kubectl apply`.
+  replicas: 1
+  selector:
+    matchLabels: { app: anime-worker, queue: feedback }
+  template:
+    metadata:
+      labels: { app: anime-worker, queue: feedback }
+    spec:
+      # Non-root, matching the image's uid 10001 — required for "restricted" PSA.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile: { type: RuntimeDefault }
+      serviceAccountName: anime-worker  # IRSA: grants SQS receive/delete
+      containers:
+        - name: worker
+          image: anime-worker:latest
+          imagePullPolicy: IfNotPresent
+          args: ["python", "-m", "anime_worker", "--queue", "feedback"]
+          env:
+            - { name: WORKER_QUEUE, value: feedback }
+            - { name: AWS_DEFAULT_REGION, value: us-east-1 }
+          envFrom:
+            - secretRef: { name: anime-app-secrets }  # DATABASE_URL, REDIS_URL, ... (via ESO)
+          resources:
+            requests: { cpu: "50m", memory: "128Mi" }
+            limits: { cpu: "500m", memory: "512Mi" }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          # Liveness via a trivial exec — the worker has no HTTP port.
+          livenessProbe:
+            exec: { command: ["python", "-c", "import anime_worker"] }
+            initialDelaySeconds: 10
+            periodSeconds: 30
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: anime-worker-feedback
+spec:
+  scaleTargetRef:
+    name: anime-worker-feedback
+  minReplicaCount: 1          # avoid cold-start on the first message (gate G6)
+  maxReplicaCount: 20
+  pollingInterval: 15
+  cooldownPeriod: 120
+  triggers:
+    - type: aws-sqs-queue
+      metadata:
+        queueURL: https://sqs.us-east-1.amazonaws.com/PLACEHOLDER/anime-prod-feedback
+        queueLength: "10"            # target msgs-per-replica → scale out beyond this
+        activationQueueLength: "1"   # don't flap: only activate above this depth
+        awsRegion: us-east-1
+      # auth via the IRSA-bound ServiceAccount (TriggerAuthentication)

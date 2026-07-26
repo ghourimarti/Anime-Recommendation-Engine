@@ -1,0 +1,4 @@
+# Report JSONs are outputs — keep the directory tracked, but not the files.
+*.json
+*.html
+!.gitignore

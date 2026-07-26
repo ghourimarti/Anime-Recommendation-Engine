@@ -1,0 +1,64 @@
+# api as an Argo Rollouts Rollout — the user-facing service gets a
+# canary with an automated analysis gate + auto-rollback. (web/workers are plain
+# Deployments: a bad worker doesn't face users, and KEDA+DLQ cover them.)
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: {{ include "anime.name" . }}-api
+  namespace: {{ .Values.namespace }}
+  labels: {{- include "anime.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.api.replicas }}
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      {{- include "anime.selectorLabels" . | nindent 6 }}
+      component: api
+  strategy:
+    canary:
+      steps:
+        - setWeight: 5
+        - pause: { duration: 2m }
+        - setWeight: 25
+        - pause: { duration: 5m }
+        # Automated gate: query success-rate; abort + roll back if it drops.
+        - analysis:
+            templates:
+              - templateName: {{ include "anime.name" . }}-api-success-rate
+        - setWeight: 100
+  template:
+    metadata:
+      labels:
+        {{- include "anime.selectorLabels" . | nindent 8 }}
+        component: api
+        app: {{ include "anime.name" . }}-api
+    spec:
+      serviceAccountName: {{ .Values.serviceAccount.api.name }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: api
+          image: {{ include "anime.image" (dict "root" . "img" .Values.image.api) | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.api.port }}
+          envFrom:
+            - configMapRef: { name: {{ include "anime.name" . }}-config }
+            - secretRef: { name: {{ .Values.externalSecrets.targetName }} }
+          # Liveness = process up (no deps); readiness = can serve (checks DB) — the
+          # K8s distinction the api's /health vs /ready endpoints implement.
+          livenessProbe:
+            httpGet: { path: /health, port: {{ .Values.api.port }} }
+            initialDelaySeconds: 20
+            periodSeconds: 15
+          readinessProbe:
+            httpGet: { path: /ready, port: {{ .Values.api.port }} }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources: {{- toYaml .Values.api.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }

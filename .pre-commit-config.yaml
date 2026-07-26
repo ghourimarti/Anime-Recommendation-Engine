@@ -1,0 +1,36 @@
+# Pre-commit hooks for the anime-recommender monorepo.
+# Install:   uv run pre-commit install
+# Run all:   uv run pre-commit run --all-files
+#
+# Notes:
+# - Local-only reference directories are excluded from every hook below.
+# - Python type-checking (mypy) is intentionally NOT in pre-commit; it runs in CI
+#   and via `make typecheck`. mypy needs the project deps to work properly and
+#   pre-commit's isolated env makes that brittle.
+
+exclude: ^(demo/|Prompts/|\.venv/)
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+        args: ['--allow-multiple-documents']
+        exclude: ^infra/k8s/helm/
+      - id: check-toml
+      - id: check-json
+      - id: check-added-large-files
+        args: ["--maxkb=512"]
+      - id: check-merge-conflict
+      - id: detect-private-key
+      - id: mixed-line-ending
+        args: ["--fix=lf"]
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.7.4
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format

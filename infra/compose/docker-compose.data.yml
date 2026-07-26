@@ -1,0 +1,102 @@
+# infra/compose/docker-compose.data.yml — DATA TIER (starts 1st)
+#
+#   postgres + pgvector              app DB + vector store   → host :1002
+#   redis                            cache + semantic cache  → host :1003
+#   localstack                       SQS + S3 emulator       → host :1004
+#
+# Everything else depends on this tier. Brought up by `make db`; layered under
+# app + obs by `make app` / `make up`.
+#
+# ─── Shared project + network ───────────────────────────────────────────────
+# All three compose files declare the SAME `name:` → one docker project, one
+# default network. That is what lets the api container (app tier) reach
+# langfuse-web / otel-collector (obs tier) by DNS name when obs is up, and drop
+# telemetry silently when obs is down. Do NOT change this name in one file only.
+#
+# ─── Ports + credentials ────────────────────────────────────────────────────
+# Every host-published port and credential is a ${VAR:-default} from .env
+# (PORTS + CREDENTIALS sections). Container-internal ports stay standard, so
+# service-to-service URLs never change when you remap host ports.
+name: anime-recommender
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: anime-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-anime}
+      POSTGRES_USER: ${POSTGRES_USER:-anime}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-anime}
+    ports:
+      - "${POSTGRES_PORT:-1002}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-anime} -d ${POSTGRES_DB:-anime}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: anime-redis
+    # allkeys-lru: when memory fills, evict least-recently-used keys — correct for
+    # a cache (never let it OOM; never let it grow unbounded).
+    # Local dev runs passwordless by design (isolated compose network); prod Redis
+    # auth comes from ElastiCache + Secrets Manager (see infra/terraform). To force
+    # a local password anyway: REDIS_EXTRA_ARGS=--requirepass <pwd> in .env, then
+    # update REDIS_URL (host) and REDIS_URL_DOCKER (containers) to redis://:<pwd>@...
+    command: redis-server --maxmemory ${REDIS_MAXMEMORY:-256mb} --maxmemory-policy allkeys-lru ${REDIS_EXTRA_ARGS:-}
+    ports:
+      - "${REDIS_PORT:-1003}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  localstack:
+    # SQS + S3 emulator — the workers talk to this locally instead of
+    # real AWS. Free tier covers SQS/S3.
+    image: localstack/localstack:3
+    container_name: anime-localstack
+    environment:
+      SERVICES: sqs,s3
+      DEBUG: "0"
+    ports:
+      - "${LOCALSTACK_PORT:-1004}:4566"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:4566/_localstack/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+
+  redisinsight:
+    # Web UI for inspecting Redis. Pre-seeds BOTH Redis instances so they appear
+    # in the database list on first open — no EULA prompt, no "Add database"
+    # step. Reaches them by Docker SERVICE NAME (redis / langfuse-redis), not
+    # localhost — inside this container localhost is RedisInsight itself.
+    #   _0 = app cache      (redis:6379, no password)      — always present
+    #   _1 = Langfuse queue (langfuse-redis:6379, pwd)     — only up with `make obs`;
+    #        shows "unreachable" if obs isn't running, which is expected/harmless.
+    image: redis/redisinsight:latest
+    container_name: anime-redisinsight
+    environment:
+      RI_ACCEPT_TERMS_AND_CONDITIONS: "true"
+      RI_REDIS_HOST_0: redis
+      RI_REDIS_PORT_0: 6379
+      RI_REDIS_ALIAS_0: app-cache
+      RI_REDIS_HOST_1: langfuse-redis
+      RI_REDIS_PORT_1: 6379
+      RI_REDIS_ALIAS_1: langfuse-queue
+      RI_REDIS_PASSWORD_1: ${LANGFUSE_REDIS_AUTH:-langfuse}
+    ports:
+      - "${REDISINSIGHT_PORT:-1016}:5540"
+    volumes:
+      - redisinsight-data:/data
+    depends_on:
+      redis: {condition: service_healthy}
+
+volumes:
+  pgdata: {}
+  redisinsight-data: {}

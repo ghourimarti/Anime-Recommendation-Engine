@@ -1,0 +1,36 @@
+# docker-compose.yml — root entrypoint (thin include)
+#
+# The stack was split into three tiers under infra/compose/ (see docs/
+# run-from-scratch.md and the Makefile). This root file exists so that a bare
+# `docker compose <cmd>` from the repo root — and every script that relies on it
+# (scripts/chaos/*, scripts/backup/*, scripts/deploy/*, `make deploy-stage1`) —
+# keeps working unchanged.
+#
+# It includes ONLY the data + app tiers = the "default stack", matching the old
+# behavior where a bare `docker compose up` did NOT start the heavy
+# observability services (they were behind `profiles: ["obs"]`).
+#
+#   default stack (this file):   data + app       → `docker compose up`
+#   add observability:           `make obs`  or
+#                                docker compose -f docker-compose.yml \
+#                                  -f infra/compose/docker-compose.obs.yml up
+#
+# Tier-by-tier control (db / app / obs / up / down / upv / downv) lives in the
+# Makefile, which composes the three files explicitly. All files share
+# `name: anime-recommender` → one project, one network, cross-tier DNS.
+#
+# NOTE: `include:` resolves each file's build contexts, env_file, and volume
+# mounts relative to THAT file's location (infra/compose/), which is why those
+# paths are written as ../.. inside the included files.
+
+# MUST match the `name:` in the included files. `include:` does NOT inherit the
+# name from included files — without this line the root project would default to
+# the directory name (p1-video-seo-engine), creating a SEPARATE container set +
+# volumes from `make db/app/up` (which use anime-recommender). Every script that
+# runs bare `docker compose` (chaos/backup/deploy) would then miss the Makefile's
+# containers. Keep these three names identical.
+name: anime-recommender
+
+include:
+  - infra/compose/docker-compose.data.yml
+  - infra/compose/docker-compose.app.yml

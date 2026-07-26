@@ -1,0 +1,42 @@
+# prod overrides. HA sizing + locked-down config.
+namespace: anime-prod
+
+image:
+  api: { repository: anime-recommender/api, tag: "" }     # set to the released SHA in CD
+  web: { repository: anime-recommender/web, tag: "" }
+  worker: { repository: anime-recommender/worker, tag: "" }
+
+serviceAccount:
+  api: { name: anime-api, roleArn: "" }      # prod IRSA ARNs
+  worker: { name: anime-worker, roleArn: "" }
+
+externalSecrets:
+  awsPrefix: anime-prod
+
+config:
+  corsOrigins: '["https://anime.example.com"]'
+  sqsQueuePrefix: anime-prod
+  otelSdkDisabled: "false"   # tracing on in prod
+
+api:
+  replicas: 3
+  resources:
+    requests: { cpu: 500m, memory: 1Gi }
+    limits: { cpu: "2", memory: 2Gi }
+
+web:
+  replicas: 3
+  hpa: { enabled: true, minReplicas: 3, maxReplicas: 20, targetCPUUtilizationPercentage: 65 }
+
+workers:
+  feedback: { minReplicas: 2, maxReplicas: 40, queueLength: 10, activationQueueLength: 1 }
+  ingestion: { minReplicas: 0, maxReplicas: 10, queueLength: 2, activationQueueLength: 1 }
+  housekeeping: { minReplicas: 0, maxReplicas: 5, queueLength: 5, activationQueueLength: 1 }
+
+ingress:
+  host: anime.example.com
+
+resourceQuota:
+  hardCpu: "32"
+  hardMemory: 64Gi
+  hardPods: "200"

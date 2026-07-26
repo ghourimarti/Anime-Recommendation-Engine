@@ -1,0 +1,8 @@
+apiVersion: v2
+name: anime-recommender
+description: Production-grade RAG anime recommender — api (canary Rollout) + web + workers
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+# CRDs this chart emits assume these controllers are installed in-cluster
+# Argo Rollouts, KEDA, External Secrets Operator, ArgoCD.

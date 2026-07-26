@@ -1,0 +1,13 @@
+# Grafana datasource provisioning — auto-adds Prometheus on first boot so you
+# don't configure it in the UI. Grafana reads Prometheus over the compose
+# network by service name.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: true

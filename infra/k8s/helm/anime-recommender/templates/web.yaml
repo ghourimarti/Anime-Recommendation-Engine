@@ -1,0 +1,84 @@
+# web (Next.js) — plain Deployment + Service + HPA. Stateless, behind the api's
+# BFF; no canary needed (the Rollout is reserved for the api).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "anime.name" . }}-web
+  namespace: {{ .Values.namespace }}
+  labels: {{- include "anime.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.web.replicas }}
+  selector:
+    matchLabels:
+      {{- include "anime.selectorLabels" . | nindent 6 }}
+      component: web
+  template:
+    metadata:
+      labels:
+        {{- include "anime.selectorLabels" . | nindent 8 }}
+        component: web
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: web
+          image: {{ include "anime.image" (dict "root" . "img" .Values.image.web) | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.web.port }}
+          env:
+            # BFF → api over the cluster Service DNS (server-side; never the browser).
+            - name: API_BASE_URL
+              value: http://{{ include "anime.name" . }}-api.{{ .Values.namespace }}.svc.cluster.local
+          envFrom:
+            - secretRef: { name: {{ .Values.externalSecrets.targetName }} }
+          livenessProbe:
+            httpGet: { path: /, port: {{ .Values.web.port }} }
+            initialDelaySeconds: 15
+            periodSeconds: 15
+          resources: {{- toYaml .Values.web.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "anime.name" . }}-web
+  namespace: {{ .Values.namespace }}
+  labels: {{- include "anime.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "anime.selectorLabels" . | nindent 4 }}
+    component: web
+  ports:
+    - name: http
+      port: 80
+      targetPort: {{ .Values.web.port }}
+{{- if .Values.web.hpa.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "anime.name" . }}-web
+  namespace: {{ .Values.namespace }}
+  labels: {{- include "anime.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "anime.name" . }}-web
+  minReplicas: {{ .Values.web.hpa.minReplicas }}
+  maxReplicas: {{ .Values.web.hpa.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.web.hpa.targetCPUUtilizationPercentage }}
+{{- end }}

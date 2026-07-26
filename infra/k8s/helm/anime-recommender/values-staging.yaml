@@ -1,0 +1,33 @@
+# staging overrides — prod-shaped but smaller; the load-test target.
+namespace: anime-staging
+
+image:
+  api: { repository: anime-recommender/api, tag: staging }
+  web: { repository: anime-recommender/web, tag: staging }
+  worker: { repository: anime-recommender/worker, tag: staging }
+
+serviceAccount:
+  api: { name: anime-api, roleArn: "" }
+  worker: { name: anime-worker, roleArn: "" }
+
+externalSecrets:
+  awsPrefix: anime-staging
+
+config:
+  corsOrigins: '["https://staging.anime.example.com"]'
+  sqsQueuePrefix: anime-staging
+  otelSdkDisabled: "false"
+
+api:
+  replicas: 2
+web:
+  replicas: 2
+  hpa: { enabled: true, minReplicas: 2, maxReplicas: 8, targetCPUUtilizationPercentage: 70 }
+
+ingress:
+  host: staging.anime.example.com
+
+resourceQuota:
+  hardCpu: "16"
+  hardMemory: 32Gi
+  hardPods: "100"

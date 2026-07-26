@@ -1,0 +1,7 @@
+# Static assets served at the site root (e.g. /robots.txt, /og-image.png).
+# Intentionally near-empty: this app uses the App Router icon convention
+# (src/app/icon.svg) for its favicon, not public/favicon.ico.
+# This directory must exist because apps/web/Dockerfile does
+# `COPY /app/public ./public` for the standalone runtime image.
+# NOTE: kept as .keep (not README.md) — .dockerignore strips *.md, which
+# would leave public/ empty in the build context and refail the web build.

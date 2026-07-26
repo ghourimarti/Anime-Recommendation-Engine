@@ -1,0 +1,116 @@
+# Default values. Per-env files (values-{dev,staging,prod}.yaml) override
+# only the deltas. Secrets are NEVER here — ESO syncs them from AWS Secrets Manager.
+
+namespace: anime
+
+image:
+  registry: "123456789012.dkr.ecr.us-east-1.amazonaws.com" # set per-account/env
+  pullPolicy: IfNotPresent
+  api: { repository: anime-recommender/api, tag: latest }
+  web: { repository: anime-recommender/web, tag: latest }
+  worker: { repository: anime-recommender/worker, tag: latest }
+
+serviceAccount:
+  api:
+    name: anime-api
+    roleArn: "" # eks.amazonaws.com/role-arn — from Terraform output api_irsa_role_arn
+  worker:
+    name: anime-worker
+    roleArn: "" # from Terraform output worker_irsa_role_arn
+
+# External Secrets Operator: sync AWS Secrets Manager → one K8s Secret pods consume.
+externalSecrets:
+  enabled: true
+  secretStoreRef:
+    name: aws-secretsmanager
+    kind: ClusterSecretStore
+  # AWS SM secret name prefix (matches the Terraform secrets module: anime-<env>/...).
+  awsPrefix: anime-dev
+  # Logical K8s Secret the workloads envFrom.
+  targetName: anime-app-secrets
+  refreshInterval: 1h
+
+# Non-secret runtime config → ConfigMap.
+config:
+  logLevel: INFO
+  otelExporterEndpoint: "" # e.g. http://otel-collector.observability:4317
+  otelServiceName: anime-api
+  otelSdkDisabled: "false"
+  corsOrigins: '["https://anime.example.com"]'
+  sqsQueuePrefix: anime-dev
+  semanticCacheThreshold: "0.92"
+  quotaFreeTierDaily: "20"
+
+api:
+  replicas: 2
+  port: 8000
+  resources:
+    requests: { cpu: 250m, memory: 512Mi }
+    limits: { cpu: "1", memory: 1Gi }
+  # Argo Rollouts canary steps: shift weight, pause, analyze, widen.
+  canary:
+    steps:
+      - setWeight: 5
+      - pause: { duration: 2m }
+      - setWeight: 25
+      - pause: { duration: 5m }
+      - analysis: true # AnalysisTemplate gate before going to 100%
+      - setWeight: 100
+    analysis:
+      successRateThreshold: "0.95"
+      # p95 for /v1/recommend. A RAG request is genuinely seconds (retrieval +
+      # rerank + LLM), so this is the SLO, not a round number. Gate latency as well
+      # as errors: a bad canary can hold a perfect success rate while doubling
+      # every response time, and success-rate alone waves that straight through.
+      p95LatencySecondsThreshold: "3.0"
+      # Must match OTEL_SERVICE_NAME — it becomes the `service_name` Prometheus
+      # label via the collector's resource_to_telemetry_conversion.
+      serviceName: anime-rag-api
+      prometheusAddress: http://prometheus.observability:9090
+
+web:
+  replicas: 2
+  port: 3000
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { cpu: 500m, memory: 512Mi }
+  hpa:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+
+# One Deployment + KEDA ScaledObject per queue (templatized).
+workers:
+  feedback: { minReplicas: 1, maxReplicas: 20, queueLength: 10, activationQueueLength: 1 }
+  ingestion: { minReplicas: 0, maxReplicas: 5, queueLength: 2, activationQueueLength: 1 }
+  housekeeping: { minReplicas: 0, maxReplicas: 3, queueLength: 5, activationQueueLength: 1 }
+workerResources:
+  requests: { cpu: 50m, memory: 128Mi }
+  limits: { cpu: 500m, memory: 512Mi }
+awsRegion: us-east-1
+# Base for KEDA SQS queueURL: https://sqs.<region>.amazonaws.com/<accountId>
+# Set per env. Full URL = "{base}/{config.sqsQueuePrefix}-{queue}".
+sqsQueueUrlBase: "https://sqs.us-east-1.amazonaws.com/123456789012"
+
+# alembic upgrade head as a pre-upgrade/pre-install hook (uses the api image).
+migrate:
+  enabled: true
+
+ingress:
+  enabled: true
+  className: alb
+  host: anime.example.com
+  # ALB + ACM TLS annotations; override per env.
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+
+resourceQuota:
+  enabled: true
+  hardCpu: "8"
+  hardMemory: 16Gi
+  hardPods: "50"
+
+networkPolicy:
+  enabled: true

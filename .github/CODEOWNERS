@@ -1,0 +1,16 @@
+# CODEOWNERS — branch protection routes review requests by path.
+# Replace `@OWNER` with your actual GitHub handle when adopting this repo.
+# See docs/repo-setup.md §1 for branch-protection wiring.
+
+# Default owner for everything
+* @OWNER
+
+# ─── Areas that warrant extra scrutiny ────────────────────────────────
+# Production gates: changes here either change what ships or what blocks
+# things from shipping. Pull in additional reviewers when collaborators join.
+
+/infra/                                  @OWNER
+/.github/                                @OWNER
+/evals/baseline.json                     @OWNER
+/packages/core/src/anime_core/prompts/   @OWNER
+/migrations/                             @OWNER

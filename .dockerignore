@@ -1,0 +1,46 @@
+# ROOT .dockerignore — the EFFECTIVE ignore file for root-context builds
+# (apps/api, apps/worker, migrate, sqs-init all build with `context: .`). Docker
+# reads the ignore file from the BUILD CONTEXT root, so per-app .dockerignore
+# files do NOT apply to root-context builds — this one does. (apps/web builds
+# with context=apps/web, so apps/web/.dockerignore covers that one.)
+#
+# The API/worker Dockerfiles use selective COPY (not COPY . .), so this is mainly
+# a context-transfer optimization + a guardrail against a local .venv (torch!) or
+# .env ever leaking into an image.
+
+# Python virtualenvs + caches (a local .venv carries CPU torch — keep it OUT)
+.venv/
+**/.venv/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.uv-cache-local/
+.codex-runtime/
+
+# Secrets — never ship into an image
+.env
+**/.env
+!.env.example
+
+# Node / Next build artifacts (web has its own context; keep root clean)
+**/node_modules/
+**/.next/
+
+# Reference-only material + the original demo
+demo/
+Prompts/
+
+# VCS, IDE, local data
+.git/
+.github/
+logs/
+eval_report.json
+chroma_db/
+
+# Docs — but KEEP README.md: the root pyproject's `readme = "README.md"` means
+# the image build COPYs it, so excluding it would break `COPY ... README.md`.
+docs/
+*.md
+!README.md

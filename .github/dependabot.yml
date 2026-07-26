@@ -1,0 +1,86 @@
+# Dependabot — weekly upgrade PRs.
+# Open-PR limits keep the queue tractable for a 1-engineer team.
+# Patch updates auto-merge once CI is green (configure via GitHub auto-merge).
+
+version: 2
+updates:
+  # Python — uv workspace
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Karachi"
+    open-pull-requests-limit: 5
+    labels: ["deps", "python"]
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+
+  # Node — Next.js frontend
+  - package-ecosystem: "npm"
+    directory: "/apps/web"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Karachi"
+    open-pull-requests-limit: 5
+    labels: ["deps", "node"]
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+    ignore:
+      # next/react majors have breaking changes — pin to minor/patch only.
+      - dependency-name: "next"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "react"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "react-dom"
+        update-types: ["version-update:semver-major"]
+
+  # GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Karachi"
+    open-pull-requests-limit: 3
+    labels: ["deps", "ci"]
+    commit-message:
+      prefix: "chore(ci)"
+      include: "scope"
+
+  # Docker base images
+  - package-ecosystem: "docker"
+    directories:
+      - "/apps/api"
+      - "/apps/web"
+      - "/apps/worker"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Karachi"
+    open-pull-requests-limit: 3
+    labels: ["deps", "docker"]
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+
+  # Terraform
+  - package-ecosystem: "terraform"
+    directory: "/infra/terraform"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Karachi"
+    open-pull-requests-limit: 3
+    labels: ["deps", "infra"]
+    commit-message:
+      prefix: "chore(infra)"
+      include: "scope"

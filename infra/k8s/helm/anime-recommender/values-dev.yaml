@@ -1,0 +1,33 @@
+# dev overrides. Only the deltas from values.yaml.
+namespace: anime-dev
+
+image:
+  api: { repository: anime-recommender/api, tag: dev }
+  web: { repository: anime-recommender/web, tag: dev }
+  worker: { repository: anime-recommender/worker, tag: dev }
+
+serviceAccount:
+  api: { name: anime-api, roleArn: "" }      # paste Terraform output api_irsa_role_arn
+  worker: { name: anime-worker, roleArn: "" } # worker_irsa_role_arn
+
+externalSecrets:
+  awsPrefix: anime-dev
+
+config:
+  corsOrigins: '["https://dev.anime.example.com"]'
+  sqsQueuePrefix: anime-dev
+  otelSdkDisabled: "true"   # no collector in dev unless the obs stack is up
+
+api:
+  replicas: 1               # dev: single replica
+web:
+  replicas: 1
+  hpa: { enabled: false, minReplicas: 1, maxReplicas: 2, targetCPUUtilizationPercentage: 80 }
+
+ingress:
+  host: dev.anime.example.com
+
+resourceQuota:
+  hardCpu: "4"
+  hardMemory: 8Gi
+  hardPods: "30"
