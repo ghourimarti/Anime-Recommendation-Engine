@@ -92,7 +92,7 @@ jobs:
       # The cross-encoder is ~130MB. Cache it so the gate stays quick and doesn't
       # hammer HuggingFace on every run.
       - name: Cache reranker weights
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/huggingface
           key: hf-${{ env.RERANKER_MODEL }}
