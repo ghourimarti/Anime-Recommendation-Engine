@@ -1,0 +1,44 @@
+# API build context is the REPO ROOT (needs packages/, migrations/, alembic.ini),
+# so this .dockerignore must exclude everything heavy/irrelevant across the repo.
+# A fat context = slow builds + the risk of shipping a local .venv or .env.
+
+# Python virtualenvs + caches (the big one — a local .venv has torch in it)
+.venv/
+**/.venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.uv-cache-local/
+
+# Secrets — never bake into an image
+.env
+**/.env
+!.env.example
+
+# Frontend — not part of the API image
+apps/web/
+
+# Reference-only material
+demo/
+Prompts/
+
+# Dev tooling, VCS, docs, IDE
+.git/
+.github/
+.codex-runtime/
+docs/
+*.md
+.editorconfig
+.pre-commit-config.yaml
+
+# Local data + logs + eval artifacts
+logs/
+eval_report.json
+chroma_db/
+
+# Node (in case context picks it up)
+**/node_modules/
+**/.next/
