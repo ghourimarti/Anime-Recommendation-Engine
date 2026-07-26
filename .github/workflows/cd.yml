@@ -1,138 +1,138 @@
-# # ─── cd — tag-triggered production deploy ────────────────────────────────────
-# # Tag-triggered production deploy. Fired only on semver tags pushed to main.
-# # Auth via GitHub OIDC into a pre-created AWS role (no long-lived AWS keys).
-# #
-# # Prerequisites (one-time, via Terraform):
-# #   • IAM role w/ trust policy restricted to this repo's `v*.*.*` tags
-# #   • ECR repos: anime-api, anime-web, anime-worker
-# #   • GitHub repo Variables: AWS_DEPLOY_ROLE_ARN, ECR_REGISTRY
-# #   • GitHub repo Secret: (none — OIDC is keyless)
-# #
-# # Flow:
-# #   build-push   — matrix build & push api/web/worker images to ECR with two
-# #                  tags each: ${{ github.ref_name }} (semver) and ${{ github.sha }}.
-# #   bump-helm    — open a PR that bumps the tag in values-prod.yaml.
-# #                  ArgoCD reconciles prod after that PR merges.
-# #
-# # Until the Terraform apply has created the role and ECR repos, this
-# # workflow will fail at "Assume AWS role" — that's expected. Don't tag a
-# # release before the cloud infrastructure exists.
+# ─── cd — tag-triggered production deploy ────────────────────────────────────
+# Tag-triggered production deploy. Fired only on semver tags pushed to main.
+# Auth via GitHub OIDC into a pre-created AWS role (no long-lived AWS keys).
+#
+# Prerequisites (one-time, via Terraform):
+#   • IAM role w/ trust policy restricted to this repo's `v*.*.*` tags
+#   • ECR repos: anime-api, anime-web, anime-worker
+#   • GitHub repo Variables: AWS_DEPLOY_ROLE_ARN, ECR_REGISTRY
+#   • GitHub repo Secret: (none — OIDC is keyless)
+#
+# Flow:
+#   build-push   — matrix build & push api/web/worker images to ECR with two
+#                  tags each: ${{ github.ref_name }} (semver) and ${{ github.sha }}.
+#   bump-helm    — open a PR that bumps the tag in values-prod.yaml.
+#                  ArgoCD reconciles prod after that PR merges.
+#
+# Until the Terraform apply has created the role and ECR repos, this
+# workflow will fail at "Assume AWS role" — that's expected. Don't tag a
+# release before the cloud infrastructure exists.
 
-# name: cd
+name: cd
 
-# on:
-#   push:
-#     tags:
-#       - "v*.*.*"
+on:
+  push:
+    tags:
+      - "v*.*.*"
 
-# concurrency:
-#   group: cd-${{ github.ref }}
-#   cancel-in-progress: false   # never cancel a prod deploy mid-flight
+concurrency:
+  group: cd-${{ github.ref }}
+  cancel-in-progress: false   # never cancel a prod deploy mid-flight
 
-# permissions:
-#   id-token: write       # OIDC
-#   contents: write       # create-pull-request branch
-#   pull-requests: write  # open the bump PR
+permissions:
+  id-token: write       # OIDC
+  contents: write       # create-pull-request branch
+  pull-requests: write  # open the bump PR
 
-# env:
-#   AWS_REGION: us-east-1
+env:
+  AWS_REGION: us-east-1
 
-# jobs:
-#   build-push:
-#     name: Build & push ${{ matrix.name }} image
-#     runs-on: ubuntu-latest
-#     timeout-minutes: 25
-#     strategy:
-#       fail-fast: true
-#       matrix:
-#         include:
-#           - name: api
-#             context: "."
-#             dockerfile: apps/api/Dockerfile
-#           - name: web
-#             context: "apps/web"
-#             dockerfile: apps/web/Dockerfile
-#           - name: worker
-#             context: "."
-#             dockerfile: apps/worker/Dockerfile
-#     steps:
-#       - uses: actions/checkout@v4
+jobs:
+  build-push:
+    name: Build & push ${{ matrix.name }} image
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - name: api
+            context: "."
+            dockerfile: apps/api/Dockerfile
+          - name: web
+            context: "apps/web"
+            dockerfile: apps/web/Dockerfile
+          - name: worker
+            context: "."
+            dockerfile: apps/worker/Dockerfile
+    steps:
+      - uses: actions/checkout@v4
 
-#       - name: Assume AWS role (OIDC)
-#         uses: aws-actions/configure-aws-credentials@v4
-#         with:
-#           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
-#           aws-region: ${{ env.AWS_REGION }}
+      - name: Assume AWS role (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
 
-#       - name: Login to ECR
-#         uses: aws-actions/amazon-ecr-login@v2
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
 
-#       - name: Set up Docker Buildx
-#         uses: docker/setup-buildx-action@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-#       - name: Build & push ${{ matrix.name }}
-#         uses: docker/build-push-action@v6
-#         with:
-#           context: ${{ matrix.context }}
-#           file: ${{ matrix.dockerfile }}
-#           push: true
-#           tags: |
-#             ${{ vars.ECR_REGISTRY }}/anime-${{ matrix.name }}:${{ github.ref_name }}
-#             ${{ vars.ECR_REGISTRY }}/anime-${{ matrix.name }}:${{ github.sha }}
-#           cache-from: type=gha,scope=${{ matrix.name }}-cd
-#           cache-to: type=gha,scope=${{ matrix.name }}-cd,mode=max
+      - name: Build & push ${{ matrix.name }}
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: |
+            ${{ vars.ECR_REGISTRY }}/anime-${{ matrix.name }}:${{ github.ref_name }}
+            ${{ vars.ECR_REGISTRY }}/anime-${{ matrix.name }}:${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.name }}-cd
+          cache-to: type=gha,scope=${{ matrix.name }}-cd,mode=max
 
-#   bump-helm:
-#     name: Open prod tag-bump PR (ArgoCD reconciles after merge)
-#     needs: build-push
-#     runs-on: ubuntu-latest
-#     timeout-minutes: 5
-#     steps:
-#       - uses: actions/checkout@v4
-#         with:
-#           fetch-depth: 0
+  bump-helm:
+    name: Open prod tag-bump PR (ArgoCD reconciles after merge)
+    needs: build-push
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-#       - name: Bump image tag in values-prod.yaml
-#         env:
-#           NEW_TAG: ${{ github.ref_name }}
-#         run: |
-#           python - <<'PY'
-#           import os
-#           import re
-#           from pathlib import Path
+      - name: Bump image tag in values-prod.yaml
+        env:
+          NEW_TAG: ${{ github.ref_name }}
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          from pathlib import Path
 
-#           new_tag = os.environ["NEW_TAG"]
-#           values = Path("infra/k8s/helm/anime-recommender/values-prod.yaml")
-#           text = values.read_text(encoding="utf-8")
-#           # Replace any `tag: "v1.2.3"` / `tag: v1.2.3` patterns — this assumes
-#           # the Helm values use the conventional semver tag shape. If you add
-#           # sha-pinned tags, extend this regex.
-#           text_new = re.sub(
-#               r'(\btag:\s*)["\']?v?\d+\.\d+\.\d+[\w.\-]*["\']?',
-#               rf'\1"{new_tag}"',
-#               text,
-#           )
-#           if text_new == text:
-#               raise SystemExit(
-#                   f"No `tag: vX.Y.Z` patterns matched in {values}. "
-#                   f"Check values-prod.yaml shape — see docs/repo-setup.md §4."
-#               )
-#           values.write_text(text_new, encoding="utf-8")
-#           print(f"Bumped image tags in {values} -> {new_tag}")
-#           PY
+          new_tag = os.environ["NEW_TAG"]
+          values = Path("infra/k8s/helm/anime-recommender/values-prod.yaml")
+          text = values.read_text(encoding="utf-8")
+          # Replace any `tag: "v1.2.3"` / `tag: v1.2.3` patterns — this assumes
+          # the Helm values use the conventional semver tag shape. If you add
+          # sha-pinned tags, extend this regex.
+          text_new = re.sub(
+              r'(\btag:\s*)["\']?v?\d+\.\d+\.\d+[\w.\-]*["\']?',
+              rf'\1"{new_tag}"',
+              text,
+          )
+          if text_new == text:
+              raise SystemExit(
+                  f"No `tag: vX.Y.Z` patterns matched in {values}. "
+                  f"Check values-prod.yaml shape — see docs/repo-setup.md §4."
+              )
+          values.write_text(text_new, encoding="utf-8")
+          print(f"Bumped image tags in {values} -> {new_tag}")
+          PY
 
-#       - name: Open PR with the bump
-#         uses: peter-evans/create-pull-request@v7
-#         with:
-#           branch: cd/bump-${{ github.ref_name }}
-#           title: "chore(deploy): bump prod images to ${{ github.ref_name }}"
-#           body: |
-#             Automated tag bump triggered by ${{ github.ref_name }}.
+      - name: Open PR with the bump
+        uses: peter-evans/create-pull-request@v7
+        with:
+          branch: cd/bump-${{ github.ref_name }}
+          title: "chore(deploy): bump prod images to ${{ github.ref_name }}"
+          body: |
+            Automated tag bump triggered by ${{ github.ref_name }}.
 
-#             ArgoCD reconciles `values-prod.yaml` -> Argo Rollouts canary
-#             (5% -> 25% -> 100% over 30 min) after this PR merges.
+            ArgoCD reconciles `values-prod.yaml` -> Argo Rollouts canary
+            (5% -> 25% -> 100% over 30 min) after this PR merges.
 
-#             **Rollback:** revert this PR, ArgoCD reconciles back; OR
-#             `argocd app rollback anime-recommender-prod`.
-#           commit-message: "chore(deploy): bump prod to ${{ github.ref_name }}"
-#           labels: deploy,automated
+            **Rollback:** revert this PR, ArgoCD reconciles back; OR
+            `argocd app rollback anime-recommender-prod`.
+          commit-message: "chore(deploy): bump prod to ${{ github.ref_name }}"
+          labels: deploy,automated

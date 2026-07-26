@@ -1,186 +1,186 @@
-# name: CI
+name: CI
 
-# # The gate every change crosses. Fast (no LLM keys, no live cloud) so it can be
-# # required on every PR without anyone learning to skip it. The slower quality gate
-# # that needs real API keys lives in eval-gate.yml.
-# # on:
-# #   push:
-# #     branches: [main]
-# #   pull_request:
-# #   workflow_dispatch:
+# The gate every change crosses. Fast (no LLM keys, no live cloud) so it can be
+# required on every PR without anyone learning to skip it. The slower quality gate
+# that needs real API keys lives in eval-gate.yml.
+# on:
+#   push:
+#     branches: [main]
+#   pull_request:
+#   workflow_dispatch:
 
-# # A new push to a PR makes the in-flight run pointless — cancel it rather than pay
-# # for it. Never cancel on main: those runs gate the deploy.
-# concurrency:
-#   group: ci-${{ github.workflow }}-${{ github.ref }}
-#   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+# A new push to a PR makes the in-flight run pointless — cancel it rather than pay
+# for it. Never cancel on main: those runs gate the deploy.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
-# permissions:
-#   contents: read
+permissions:
+  contents: read
 
-# env:
-#   # Never let a CI runner reach out to a real telemetry collector.
-#   OTEL_SDK_DISABLED: "true"
+env:
+  # Never let a CI runner reach out to a real telemetry collector.
+  OTEL_SDK_DISABLED: "true"
 
-# jobs:
-#   python:
-#     name: python (lint, types, tests)
-#     runs-on: ubuntu-latest
-#     steps:
-#       - uses: actions/checkout@v4
+jobs:
+  python:
+    name: python (lint, types, tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
-#       - name: Install uv
-#         uses: astral-sh/setup-uv@v5
-#         with:
-#           enable-cache: true
-#           cache-dependency-glob: uv.lock
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
 
-#       # --frozen: the lockfile is authoritative. If a pyproject edit didn't make it
-#       # into uv.lock, this FAILS instead of quietly resolving something different
-#       # from what the images build — the exact drift that makes "works in CI, breaks
-#       # in prod" possible.
-#       - name: Sync (frozen lockfile)
-#         run: uv sync --frozen --all-packages
+      # --frozen: the lockfile is authoritative. If a pyproject edit didn't make it
+      # into uv.lock, this FAILS instead of quietly resolving something different
+      # from what the images build — the exact drift that makes "works in CI, breaks
+      # in prod" possible.
+      - name: Sync (frozen lockfile)
+        run: uv sync --frozen --all-packages
 
-#       - name: Lint (ruff)
-#         run: uv run ruff check packages apps scripts
+      - name: Lint (ruff)
+        run: uv run ruff check packages apps scripts
 
-#       - name: Format check (ruff)
-#         run: uv run ruff format --check packages apps scripts
+      - name: Format check (ruff)
+        run: uv run ruff format --check packages apps scripts
 
-#       - name: Typecheck (mypy)
-#         run: uv run mypy packages apps
+      - name: Typecheck (mypy)
+        run: uv run mypy packages apps
 
-#       - name: Tests
-#         run: uv run pytest -q
+      - name: Tests
+        run: uv run pytest -q
 
-#   web:
-#     name: web (lint, typecheck, build)
-#     runs-on: ubuntu-latest
-#     defaults:
-#       run:
-#         working-directory: apps/web
-#     steps:
-#       - uses: actions/checkout@v4
+  web:
+    name: web (lint, typecheck, build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
 
-#       - uses: pnpm/action-setup@v4
-#         with:
-#           package_json_file: apps/web/package.json
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: apps/web/package.json
 
-#       - uses: actions/setup-node@v4
-#         with:
-#           node-version: 22
-#           cache: pnpm
-#           cache-dependency-path: apps/web/pnpm-lock.yaml
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: apps/web/pnpm-lock.yaml
 
-#       - name: Install (frozen lockfile)
-#         run: pnpm install --frozen-lockfile
+      - name: Install (frozen lockfile)
+        run: pnpm install --frozen-lockfile
 
-#       - name: Lint
-#         run: pnpm lint
+      - name: Lint
+        run: pnpm lint
 
-#       - name: Typecheck
-#         run: pnpm exec tsc --noEmit
+      - name: Typecheck
+        run: pnpm exec tsc --noEmit
 
-#       # NEXT_PUBLIC_* are inlined at BUILD time, and the Clerk provider throws at
-#       # prerender if the publishable key is absent. A dummy key is enough to prove
-#       # the build compiles; the real one is injected per-environment at deploy.
-#       - name: Build
-#         run: pnpm build
-#         env:
-#           # A Clerk publishable key is base64 WITH STRUCTURE, not an opaque string: Clerk
-#           # decodes it at import and throws on a malformed one, which crashes the prerender
-#           # of every page that uses Clerk. "pk_test_ci_build_only" looked like a reasonable
-#           # placeholder and failed the build 100% of the time. This is
-#           # pk_test_ + base64("example.clerk.accounts.dev$") — valid shape, no real tenant.
-#           NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: pk_test_ZXhhbXBsZS5jbGVyay5hY2NvdW50cy5kZXYk
-#           NEXT_PUBLIC_SITE_URL: http://localhost:1006
-#           NEXT_TELEMETRY_DISABLED: "1"
+      # NEXT_PUBLIC_* are inlined at BUILD time, and the Clerk provider throws at
+      # prerender if the publishable key is absent. A dummy key is enough to prove
+      # the build compiles; the real one is injected per-environment at deploy.
+      - name: Build
+        run: pnpm build
+        env:
+          # A Clerk publishable key is base64 WITH STRUCTURE, not an opaque string: Clerk
+          # decodes it at import and throws on a malformed one, which crashes the prerender
+          # of every page that uses Clerk. "pk_test_ci_build_only" looked like a reasonable
+          # placeholder and failed the build 100% of the time. This is
+          # pk_test_ + base64("example.clerk.accounts.dev$") — valid shape, no real tenant.
+          NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: pk_test_ZXhhbXBsZS5jbGVyay5hY2NvdW50cy5kZXYk
+          NEXT_PUBLIC_SITE_URL: http://localhost:1006
+          NEXT_TELEMETRY_DISABLED: "1"
 
-#   audit:
-#     name: supply chain (secrets, deps, licenses)
-#     runs-on: ubuntu-latest
-#     steps:
-#       - uses: actions/checkout@v4
-#         with:
-#           # Secret scanning needs history to catch a credential that was committed
-#           # and then "removed" in a later commit — it's still in the objects, and
-#           # it's still leaked.
-#           fetch-depth: 0
+  audit:
+    name: supply chain (secrets, deps, licenses)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Secret scanning needs history to catch a credential that was committed
+          # and then "removed" in a later commit — it's still in the objects, and
+          # it's still leaked.
+          fetch-depth: 0
 
-#       - uses: astral-sh/setup-uv@v5
-#         with:
-#           enable-cache: true
-#           cache-dependency-glob: uv.lock
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
 
-#       - run: uv sync --frozen --all-packages
+      - run: uv sync --frozen --all-packages
 
-#       - name: Secret scan
-#         run: uv run python scripts/audit/secrets.py
+      - name: Secret scan
+        run: uv run python scripts/audit/secrets.py
 
-#       - name: Dependency vulnerabilities
-#         run: uv run python scripts/audit/deps.py
+      - name: Dependency vulnerabilities
+        run: uv run python scripts/audit/deps.py
 
-#       - name: License policy
-#         run: uv run python scripts/audit/licenses.py
+      - name: License policy
+        run: uv run python scripts/audit/licenses.py
 
-#   images:
-#     name: images (build + Trivy scan)
-#     runs-on: ubuntu-latest
-#     strategy:
-#       fail-fast: false
-#       matrix:
-#         include:
-#           - name: api
-#             dockerfile: apps/api/Dockerfile
-#             context: .
-#           - name: worker
-#             dockerfile: apps/worker/Dockerfile
-#             context: .
-#           - name: web
-#             dockerfile: apps/web/Dockerfile
-#             context: apps/web
-#     steps:
-#       - uses: actions/checkout@v4
+  images:
+    name: images (build + Trivy scan)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: api
+            dockerfile: apps/api/Dockerfile
+            context: .
+          - name: worker
+            dockerfile: apps/worker/Dockerfile
+            context: .
+          - name: web
+            dockerfile: apps/web/Dockerfile
+            context: apps/web
+    steps:
+      - uses: actions/checkout@v4
 
-#       - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v3
 
-#       # Load into the local daemon (not pushed) so Trivy can scan the exact image
-#       # this PR produces — scanning the Dockerfile alone would miss vulnerabilities
-#       # that come in through the base image and installed packages.
-#       - name: Build ${{ matrix.name }}
-#         uses: docker/build-push-action@v6
-#         with:
-#           context: ${{ matrix.context }}
-#           file: ${{ matrix.dockerfile }}
-#           tags: anime-${{ matrix.name }}:ci
-#           load: true
-#           cache-from: type=gha,scope=${{ matrix.name }}
-#           cache-to: type=gha,mode=max,scope=${{ matrix.name }}
-#           build-args: |
-#             NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_ZXhhbXBsZS5jbGVyay5hY2NvdW50cy5kZXYk
-#             NEXT_PUBLIC_SITE_URL=http://localhost:1006
+      # Load into the local daemon (not pushed) so Trivy can scan the exact image
+      # this PR produces — scanning the Dockerfile alone would miss vulnerabilities
+      # that come in through the base image and installed packages.
+      - name: Build ${{ matrix.name }}
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          tags: anime-${{ matrix.name }}:ci
+          load: true
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+          build-args: |
+            NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_ZXhhbXBsZS5jbGVyay5hY2NvdW50cy5kZXYk
+            NEXT_PUBLIC_SITE_URL=http://localhost:1006
 
-#       # Fail on HIGH/CRITICAL only. Wiring MEDIUM into a blocking gate trains people
-#       # to bypass the gate, which is worse than not having one.
-#       - name: Trivy scan ${{ matrix.name }}
-#         uses: aquasecurity/trivy-action@0.28.0
-#         with:
-#           image-ref: anime-${{ matrix.name }}:ci
-#           format: table
-#           exit-code: "1"
-#           severity: HIGH,CRITICAL
-#           ignore-unfixed: true
+      # Fail on HIGH/CRITICAL only. Wiring MEDIUM into a blocking gate trains people
+      # to bypass the gate, which is worse than not having one.
+      - name: Trivy scan ${{ matrix.name }}
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: anime-${{ matrix.name }}:ci
+          format: table
+          exit-code: "1"
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
 
-#   ci-ok:
-#     # One required check to protect the branch with, so adding a job later doesn't
-#     # mean re-editing branch protection (and forgetting to).
-#     name: CI OK
-#     if: always()
-#     needs: [python, web, audit, images]
-#     runs-on: ubuntu-latest
-#     steps:
-#       - name: Fail if any job failed
-#         if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
-#         run: exit 1
-#       - run: echo "all green"
+  ci-ok:
+    # One required check to protect the branch with, so adding a job later doesn't
+    # mean re-editing branch protection (and forgetting to).
+    name: CI OK
+    if: always()
+    needs: [python, web, audit, images]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if any job failed
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+      - run: echo "all green"
