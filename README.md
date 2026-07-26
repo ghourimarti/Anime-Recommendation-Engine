@@ -62,7 +62,7 @@ local→cloud path (Docker → Helm/EKS → Terraform).
 | 🩹 **Graceful Degradation** | Every failure has a defined fallback: Groq down → OpenAI · both LLMs down → cached "popular" set · pgvector down → Postgres FTS · retrieval empty → curated sample · Redis down → cache-miss pass-through |
 | 📨 **Async Workers (SQS + KEDA)** | Feedback / ingestion (re-embed) / housekeeping queues on SQS with **DLQ + redrive**, **idempotent** at-least-once processing, **KEDA** autoscaling on queue depth |
 | 📊 **Full Observability** | One request = one **OpenTelemetry** trace (trace-id woven into structured JSON logs) → Prometheus/Grafana; **Langfuse** for per-call LLM token/cost/latency; **PII-redacted** logs |
-| 📈 **CI Eval Gate** | IR metrics (NDCG / MRR / Recall / Success @1,@3 + diversity) on a 111-query golden set, with a gate that blocks a merge on **regression vs baseline AND requires lift over naive** |
+| 📈 **CI Eval Gate** | IR metrics (NDCG / MRR / Recall / Success @1,@3 + diversity) on a 111-query golden set, with an eval gate (manual/dispatch) that WOULD block regressions
 | 🐳 **Deploy-Ready** | Multi-stage **non-root** Docker (×3) · 3-tier compose mesh · **Helm** chart with **Argo Rollouts canary** + KEDA + **External Secrets** · **Terraform** (VPC/EKS/RDS/ElastiCache/S3/SQS/ECR/IRSA) · GitHub Actions with the eval gate |
 
 ---
@@ -550,7 +550,7 @@ A clean local → cloud path:
    cd infra/terraform/envs/dev && terraform init -backend=false && terraform validate
    ```
 4. **GitOps + CI/CD** — an **ArgoCD ApplicationSet** stamps one Application per env from the chart;
-   GitHub Actions (`.github/workflows/`) runs lint → mypy → tests → build → **eval gate** → image scan.
+   GitHub Actions (`.github/workflows/`) runs lint → mypy → tests → build → **eval gate** → chain, or footnote it as dispatch-only.
 
 ---
 

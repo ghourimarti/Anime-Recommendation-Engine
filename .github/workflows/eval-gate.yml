@@ -11,24 +11,24 @@ name: Eval Gate
 # It is split from ci.yml because it needs a real OPENAI_API_KEY (embeddings) and
 # a live Postgres. Keeping it separate means ci.yml stays fast, keyless and
 # runnable on forks, while this one runs where the secrets exist.
-# on:
-#   pull_request:
-#     # Only for changes that can plausibly move the numbers. Running it on a README
-#     # edit just teaches people the gate is noise.
-#     paths:
-#       - "packages/retrieval/**"
-#       - "packages/eval/**"
-#       - "packages/core/src/anime_core/embeddings/**"
-#       - "packages/ingestion/**"
-#       - "evals/**"
-#       - ".github/workflows/eval-gate.yml"
-#   push:
-#     branches: [main]
-#   schedule:
-#     # Weekly. Catches drift we didn't cause: a provider silently reweighting an
-#     # embedding model degrades retrieval with no commit of ours to blame.
-#     - cron: "0 6 * * 1"
-#   workflow_dispatch:
+on:
+  pull_request:
+    # Only for changes that can plausibly move the numbers. Running it on a README
+    # edit just teaches people the gate is noise.
+    paths:
+      - "packages/retrieval/**"
+      - "packages/eval/**"
+      - "packages/core/src/anime_core/embeddings/**"
+      - "packages/ingestion/**"
+      - "evals/**"
+      - ".github/workflows/eval-gate.yml"
+  push:
+    branches: [main]
+  schedule:
+    # Weekly. Catches drift we didn't cause: a provider silently reweighting an
+    # embedding model degrades retrieval with no commit of ours to blame.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
 
 concurrency:
   group: eval-${{ github.ref }}
