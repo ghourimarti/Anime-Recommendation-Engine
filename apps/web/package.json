@@ -46,7 +46,7 @@
     "tailwindcss": "^3.4.17",
     "tailwindcss-animate": "^1.0.7",
     "typescript": "^5.7.2",
-    "vitest": "^3.2.6"
+    "vitest": "^4.1.10"
   },
   "pnpm": {
     "//": "pnpm 10 blocks lifecycle/build scripts unless explicitly approved. In a --frozen-lockfile Docker build that's a hard error, so we allow-list the packages that genuinely need a native build: sharp (next/image), esbuild (vitest), plus Clerk's + the resolver's postinstalls.",
