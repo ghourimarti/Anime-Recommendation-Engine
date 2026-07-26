@@ -1,0 +1,14 @@
+# Grafana dashboard provisioning — loads any JSON dashboards found in the
+# mounted /var/lib/grafana/dashboards dir on boot.
+apiVersion: 1
+
+providers:
+  - name: default
+    orgId: 1
+    folder: ""
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards

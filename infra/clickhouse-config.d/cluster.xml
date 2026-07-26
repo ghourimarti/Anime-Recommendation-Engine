@@ -1,0 +1,58 @@
+<clickhouse>
+    <!-- Listen on all interfaces. CRITICAL: this volume-mounts OVER the image's
+         /etc/clickhouse-server/config.d/, which shadows the built-in
+         docker_related_config.xml that normally sets this. Without it ClickHouse
+         binds 127.0.0.1 only and every cross-container connect is refused
+         (langfuse-web/worker → clickhouse:9000 → "connection refused").
+         listen_try=1: don't fail boot if an address (e.g. IPv6) can't bind. -->
+    <listen_host>0.0.0.0</listen_host>
+    <listen_try>1</listen_try>
+
+    <!-- ClickHouse Keeper: built-in ZooKeeper replacement for single-node dev.
+         Langfuse v3 uses ReplicatedMergeTree ON CLUSTER default, which requires
+         a coordination service. No extra container needed — Keeper runs in-process. -->
+    <keeper_server>
+        <tcp_port>9181</tcp_port>
+        <server_id>1</server_id>
+        <log_storage_path>/var/lib/clickhouse/coordination/log</log_storage_path>
+        <snapshot_storage_path>/var/lib/clickhouse/coordination/snapshots</snapshot_storage_path>
+        <coordination_settings>
+            <operation_timeout_ms>10000</operation_timeout_ms>
+            <session_timeout_ms>30000</session_timeout_ms>
+            <raft_logs_level>warning</raft_logs_level>
+        </coordination_settings>
+        <raft_configuration>
+            <server>
+                <id>1</id>
+                <hostname>localhost</hostname>
+                <port>9444</port>
+            </server>
+        </raft_configuration>
+    </keeper_server>
+
+    <!-- Point ClickHouse itself at the Keeper it just started. -->
+    <zookeeper>
+        <node>
+            <host>localhost</host>
+            <port>9181</port>
+        </node>
+    </zookeeper>
+
+    <!-- Single-node cluster named "default" — satisfies ON CLUSTER default. -->
+    <remote_servers>
+        <default>
+            <shard>
+                <replica>
+                    <host>clickhouse</host>
+                    <port>9000</port>
+                </replica>
+            </shard>
+        </default>
+    </remote_servers>
+
+    <!-- Macros used by ReplicatedMergeTree path templates. -->
+    <macros>
+        <shard>01</shard>
+        <replica>01</replica>
+    </macros>
+</clickhouse>

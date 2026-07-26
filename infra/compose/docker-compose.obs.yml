@@ -1,0 +1,249 @@
+# infra/compose/docker-compose.obs.yml — OBSERVABILITY TIER (optional, heavy)
+#
+#   otel-collector       OTLP receiver → Langfuse exporter   → host :1014/:1015
+#   clickhouse           Langfuse trace storage              → host :1007/:1008
+#   langfuse-postgres    Langfuse config/auth DB             → host :1009
+#   langfuse-redis       Langfuse queue                      → host :1010
+#   minio + create-bucket  Langfuse S3 event uploads         → host :1011/:1012
+#   langfuse-worker      Langfuse async ingestion
+#   langfuse-web         Langfuse UI                         → host :1013
+#
+# Brought up by `make obs` (standalone) or layered by `make up` (everything).
+# Cold start ~1-3 min: ClickHouse warm-up + Langfuse migrations. First run:
+# open http://localhost:1013, sign up, create org/project, copy the pk-lf/sk-lf
+# keys into .env, set OTEL_SDK_DISABLED=false, restart the api.
+#
+# ─── Isolation ──────────────────────────────────────────────────────────────
+# langfuse-postgres/redis are SEPARATE from the app's postgres/redis on purpose:
+# an outage in the Langfuse stack must NEVER take down the recommender DB.
+#
+# Shares `name: anime-recommender` with data + app so the api container can
+# reach langfuse-web + otel-collector by DNS name across tiers.
+name: anime-recommender
+
+x-langfuse-env: &langfuse-env
+  # Keep ALL Langfuse env in one place — drift between langfuse-web and
+  # langfuse-worker is a classic "why doesn't it work" trap.
+  DATABASE_URL: postgresql://${LANGFUSE_DB_USER:-langfuse}:${LANGFUSE_DB_PASSWORD:-langfuse}@langfuse-postgres:5432/${LANGFUSE_DB_NAME:-langfuse}
+  CLICKHOUSE_URL: http://clickhouse:8123
+  CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
+  CLICKHOUSE_USER: ${CLICKHOUSE_USER:-clickhouse}
+  CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-clickhouse}
+  NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:-langfuse-dev-nextauth-secret-change-me}
+  SALT: ${LANGFUSE_SALT:-langfuse-dev-salt-change-me}
+  ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:-0000000000000000000000000000000000000000000000000000000000000000}
+  TELEMETRY_ENABLED: "false"
+  LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+  LANGFUSE_S3_EVENT_UPLOAD_REGION: us-east-1
+  LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minio}
+  LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-miniosecret}
+  LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
+  LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+  REDIS_HOST: langfuse-redis
+  REDIS_PORT: 6379
+  REDIS_AUTH: ${LANGFUSE_REDIS_AUTH:-langfuse}
+
+# Headless bootstrap: on the FIRST boot against an EMPTY langfuse DB, Langfuse
+# auto-creates this user + org + project and pins the project API keys to the
+# values below. Because the keys match the app's LANGFUSE_PUBLIC/SECRET_KEY and
+# the collector's LANGFUSE_BASIC_AUTH, tracing works immediately — no manual
+# signup, no copy-pasting keys. Log in at http://localhost:1013 with
+# LANGFUSE_INIT_USER_EMAIL / _PASSWORD.
+#
+# IMPORTANT: these only take effect when the resource does NOT already exist.
+# If you created a project by hand before (existing langfuse-pgdata volume),
+# wipe it first so the seed runs:  make downv   (or remove the langfuse volumes).
+# Applied to langfuse-web only (it owns init); the worker doesn't need them.
+x-langfuse-init: &langfuse-init
+  LANGFUSE_INIT_ORG_ID: ${LANGFUSE_INIT_ORG_ID:-anime-local}
+  LANGFUSE_INIT_ORG_NAME: ${LANGFUSE_INIT_ORG_NAME:-Anime Recommender}
+  LANGFUSE_INIT_PROJECT_ID: ${LANGFUSE_INIT_PROJECT_ID:-anime-recommender}
+  LANGFUSE_INIT_PROJECT_NAME: ${LANGFUSE_INIT_PROJECT_NAME:-anime-recommender}
+  LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+  LANGFUSE_INIT_PROJECT_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+  LANGFUSE_INIT_USER_EMAIL: ${LANGFUSE_INIT_USER_EMAIL:-admin@anime.local}
+  LANGFUSE_INIT_USER_NAME: ${LANGFUSE_INIT_USER_NAME:-Admin}
+  LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD:-anime-admin-1234}
+
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.110.0
+    container_name: anime-otel-collector
+    command: ["--config=/etc/otelcol/config.yaml"]
+    environment:
+      # Langfuse OTLP auth: base64(LANGFUSE_PUBLIC_KEY:LANGFUSE_SECRET_KEY)
+      # Generate: echo -n "pk-lf-...:sk-lf-..." | base64
+      # If unset → Langfuse export gets 401 (logged, non-retryable; collector runs fine).
+      LANGFUSE_BASIC_AUTH: ${LANGFUSE_BASIC_AUTH:-}
+    volumes:
+      - ../../infra/otel-collector-config.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "${OTEL_GRPC_PORT:-1014}:4317"  # OTLP gRPC — the app exports here
+      - "${OTEL_HTTP_PORT:-1015}:4318"  # OTLP HTTP — kept open for curl-based debugging
+      - "${OTEL_PROM_PORT:-1017}:8889"  # Prometheus metrics — scraped by Prometheus
+
+  prometheus:
+    # Scrapes the OTel collector's prometheus exporter (otel-collector:8889) and
+    # stores the app's metrics as time series. Grafana reads from here.
+    image: prom/prometheus:v2.55.1
+    container_name: anime-prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+    volumes:
+      - ../../infra/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-1018}:9090"
+
+  grafana:
+    # Dashboards over Prometheus. Datasource + a starter dashboard are
+    # auto-provisioned (infra/observability/grafana/provisioning) so it opens
+    # ready to use. Login uses GF_SECURITY_ADMIN_* below.
+    image: grafana/grafana:11.3.0
+    container_name: anime-grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      # Skip the "change password" prompt on first login for local dev.
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_USERS_DEFAULT_THEME: dark
+    volumes:
+      - ../../infra/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../../infra/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "${GRAFANA_PORT:-1019}:3000"
+    depends_on:
+      prometheus: {condition: service_started}
+
+  clickhouse:
+    # Langfuse stores high-volume trace data in ClickHouse; postgres holds
+    # configuration + auth. Splitting prevents a noisy trace volume from
+    # blocking the auth path.
+    image: clickhouse/clickhouse-server:24.10
+    container_name: anime-langfuse-clickhouse
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-clickhouse}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-clickhouse}
+    ports:
+      # Published for host-side inspection (DBeaver/curl); Langfuse itself talks
+      # over the compose network on the internal 8123/9000.
+      - "${CLICKHOUSE_HTTP_PORT:-1007}:8123"
+      - "${CLICKHOUSE_NATIVE_PORT:-1008}:9000"
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - ../../infra/clickhouse-config.d:/etc/clickhouse-server/config.d:ro
+    # Healthcheck uses clickhouse-client (native protocol, local default user —
+    # no HTTP basic-auth needed) and queries system.zookeeper. This passes ONLY
+    # when the server is up AND the in-process Keeper is responsive — which is
+    # the exact precondition Langfuse's ReplicatedMergeTree migrations need.
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT count() FROM system.zookeeper WHERE path='/'"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  langfuse-postgres:
+    # Separate from `postgres` — isolation: an outage in Langfuse must NEVER
+    # take down the recommender DB. Same image, isolated lifecycle.
+    image: postgres:16-alpine
+    container_name: anime-langfuse-postgres
+    environment:
+      POSTGRES_DB: ${LANGFUSE_DB_NAME:-langfuse}
+      POSTGRES_USER: ${LANGFUSE_DB_USER:-langfuse}
+      POSTGRES_PASSWORD: ${LANGFUSE_DB_PASSWORD:-langfuse}
+    ports:
+      # Published for host-side inspection (pgAdmin/psql); Langfuse talks internal.
+      - "${LANGFUSE_POSTGRES_PORT:-1009}:5432"
+    volumes:
+      - langfuse-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${LANGFUSE_DB_USER:-langfuse} -d ${LANGFUSE_DB_NAME:-langfuse}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  langfuse-redis:
+    image: redis:7-alpine
+    container_name: anime-langfuse-redis
+    command: ["redis-server", "--requirepass", "${LANGFUSE_REDIS_AUTH:-langfuse}"]
+    ports:
+      # Published for host-side inspection (RedisInsight); Langfuse talks internal.
+      - "${LANGFUSE_REDIS_PORT:-1010}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${LANGFUSE_REDIS_AUTH:-langfuse}", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  langfuse-worker:
+    image: langfuse/langfuse-worker:3
+    container_name: anime-langfuse-worker
+    # On first boot the ClickHouse image bounces its query listeners after our
+    # Keeper healthcheck already passed; web/worker can land in that window and
+    # get a one-time `connection refused`. Auto-restart retries against the
+    # now-settled server. (Matches Langfuse's official self-host compose.)
+    restart: unless-stopped
+    depends_on:
+      langfuse-postgres: {condition: service_healthy}
+      clickhouse: {condition: service_healthy}
+      langfuse-redis: {condition: service_healthy}
+      minio-create-bucket: {condition: service_completed_successfully}
+    environment: *langfuse-env
+
+  langfuse-web:
+    image: langfuse/langfuse:3
+    container_name: anime-langfuse-web
+    restart: unless-stopped  # see langfuse-worker — survives the first-boot ClickHouse listener bounce
+    depends_on:
+      langfuse-postgres: {condition: service_healthy}
+      clickhouse: {condition: service_healthy}
+      langfuse-redis: {condition: service_healthy}
+      minio-create-bucket: {condition: service_completed_successfully}
+    environment:
+      # Merge the shared config + the headless-init seed (user/org/project/keys).
+      <<: [*langfuse-env, *langfuse-init]
+      # Must match the HOST-published UI port or Langfuse auth redirects break.
+      NEXTAUTH_URL: http://localhost:${LANGFUSE_WEB_PORT:-1013}
+    ports:
+      - "${LANGFUSE_WEB_PORT:-1013}:3000"
+
+  minio:
+    image: minio/minio:latest
+    container_name: anime-langfuse-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-miniosecret}
+    volumes:
+      - minio-data:/data
+    ports:
+      - "${MINIO_API_PORT:-1011}:9000"     # S3 API (host-side debugging with mc/aws-cli)
+      - "${MINIO_CONSOLE_PORT:-1012}:9001" # web console
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio-create-bucket:
+    image: minio/mc:latest
+    container_name: anime-langfuse-minio-init
+    depends_on:
+      minio: {condition: service_healthy}
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-minio} ${MINIO_ROOT_PASSWORD:-miniosecret} &&
+      mc mb --ignore-existing local/langfuse &&
+      echo 'bucket langfuse ready'
+      "
+
+volumes:
+  clickhouse-data: {}
+  langfuse-pgdata: {}
+  minio-data: {}
+  prometheus-data: {}
+  grafana-data: {}

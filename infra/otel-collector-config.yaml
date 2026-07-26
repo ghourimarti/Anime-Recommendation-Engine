@@ -1,0 +1,68 @@
+# OpenTelemetry Collector — local dev + obs-profile config.
+#
+# Receives OTLP gRPC (4317) and HTTP (4318) from the api service, batches, and
+# exports to:
+#   debug          — stdout (always; useful for local span inspection)
+#   otlphttp/langfuse — self-hosted Langfuse OTLP ingestion (traces + logs only;
+#                       Langfuse doesn't ingest metrics)
+#
+# Langfuse auth prerequisite:
+#   1. Open http://localhost:1013 → create org → project → copy API keys.
+#   2. Add to .env:
+#        LANGFUSE_PUBLIC_KEY=pk-lf-...
+#        LANGFUSE_SECRET_KEY=sk-lf-...
+#        LANGFUSE_BASIC_AUTH=$(echo -n "pk-lf-...:sk-lf-..." | base64)
+#   3. Also set OTEL_SDK_DISABLED=false in .env so the api emits spans.
+#
+# If LANGFUSE_BASIC_AUTH is unset/empty, Langfuse export gets 401 on each batch
+# (logged once per batch; non-retryable 4xx — no spam). Collector keeps running
+# and the debug exporter still works.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 512
+
+exporters:
+  debug:
+    verbosity: basic
+
+  # Self-hosted Langfuse OTLP endpoint.
+  # http:// → no TLS required. 401 is non-retryable (wrong/missing auth drops quietly).
+  otlphttp/langfuse:
+    endpoint: http://langfuse-web:3000/api/public/otel
+    headers:
+      Authorization: "Basic ${env:LANGFUSE_BASIC_AUTH}"
+
+  # Prometheus scrape target. The app PUSHES metrics via OTLP; this exporter
+  # re-exposes them at :8889/metrics for Prometheus to PULL. Prometheus (obs
+  # tier) scrapes otel-collector:8889; Grafana reads Prometheus. This is the
+  # local equivalent of the Grafana Cloud path — no app code changes.
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    # Keep OTel resource attributes as labels so dashboards can filter by service.
+    resource_to_telemetry_conversion:
+      enabled: true
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug, otlphttp/langfuse]
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug, prometheus]
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug, otlphttp/langfuse]

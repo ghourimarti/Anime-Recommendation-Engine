@@ -1,0 +1,39 @@
+# ArgoCD ApplicationSet — GitOps. One template stamps out a
+# per-env Application (dev/staging/prod) from the list generator. ArgoCD then
+# reconciles each env's cluster state to this chart + the env's values file.
+# (Replaces hand-maintaining three near-identical Application manifests.)
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: anime-recommender
+  namespace: argocd
+spec:
+  generators:
+    - list:
+        elements:
+          - env: dev
+          - env: staging
+          - env: prod
+  template:
+    metadata:
+      name: "anime-recommender-{{`{{env}}`}}"
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/ghourimarti/Anime-Recommendation-Engine.git
+        targetRevision: main
+        path: infra/k8s/helm/anime-recommender
+        helm:
+          valueFiles:
+            - "values-{{`{{env}}`}}.yaml"
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: "anime-{{`{{env}}`}}"
+      syncPolicy:
+        automated:
+          prune: true       # delete resources removed from git
+          selfHeal: true    # revert manual drift back to git state
+        syncOptions:
+          - CreateNamespace=true
+        # prod gets manual sync in practice — flip automated.selfHeal off for prod
+        # via a separate generator element if you want a human gate before prod.

@@ -1,0 +1,35 @@
+# Namespace isolation: a ResourceQuota caps blast radius (a runaway
+# Deployment can't starve the cluster) and a default-deny NetworkPolicy stops
+# lateral movement (staging + prod share a cluster — namespaces must be walls).
+{{- if .Values.resourceQuota.enabled }}
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: {{ include "anime.name" . }}-quota
+  namespace: {{ .Values.namespace }}
+  labels: {{- include "anime.labels" . | nindent 4 }}
+spec:
+  hard:
+    requests.cpu: {{ .Values.resourceQuota.hardCpu | quote }}
+    requests.memory: {{ .Values.resourceQuota.hardMemory }}
+    pods: {{ .Values.resourceQuota.hardPods | quote }}
+{{- end }}
+{{- if .Values.networkPolicy.enabled }}
+---
+# Default-deny ingress; allow only same-namespace traffic (web↔api↔worker).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "anime.name" . }}-default-deny-ingress
+  namespace: {{ .Values.namespace }}
+  labels: {{- include "anime.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector: {}        # same namespace only
+        # The ingress controller's namespace reaches web/api (label it accordingly).
+        - namespaceSelector:
+            matchLabels: { "kubernetes.io/metadata.name": ingress-nginx }
+{{- end }}

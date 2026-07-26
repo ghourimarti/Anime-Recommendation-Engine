@@ -1,0 +1,159 @@
+# infra/compose/docker-compose.app.yml — APP TIER (starts last)
+#
+#   sqs-init   one-shot: create SQS queues + DLQs in LocalStack, then exit
+#   migrate    one-shot: alembic upgrade head, then exit
+#   api        FastAPI backend  → host :1005
+#   web        Next.js frontend → host :1006
+#   worker     async SQS consumer (feedback queue)
+#
+# Requires the DATA tier (postgres/redis/localstack) — `make app` layers both:
+#   docker compose -f data.yml -f app.yml up
+# The depends_on entries below reference data-tier services by name; that
+# resolves because all files share `name: anime-recommender` (one project).
+#
+# ─── Path note ──────────────────────────────────────────────────────────────
+# Build contexts + env_file are relative to THIS file's directory
+# (infra/compose/), hence ../.. back to the repo root. When this file is pulled
+# in via the root docker-compose.yml `include:`, compose still resolves these
+# paths relative to this file — so both invocation styles agree.
+#
+# ─── Cross-tier telemetry ───────────────────────────────────────────────────
+# api points at http://langfuse-web:3000 and http://otel-collector:4317 (obs
+# tier). If obs is up → resolves. If obs is down → BatchSpanProcessor retries
+# harmlessly and the Langfuse SDK drops; the app does NOT crash. Enable tracing
+# with OTEL_SDK_DISABLED=false in .env when you run `make obs`.
+name: anime-recommender
+
+services:
+  sqs-init:
+    # Creates the SQS queues + DLQs (with redrive policy) in LocalStack, reusing
+    # our own ensure_queues() bootstrap. api + worker wait on this completing so
+    # they never race a missing queue.
+    build:
+      context: ../..
+      dockerfile: apps/worker/Dockerfile
+    image: anime-worker:latest
+    container_name: anime-sqs-init
+    command:
+      - python
+      - -c
+      - "import asyncio; from anime_core.sqs import ensure_queues; print(asyncio.run(ensure_queues()))"
+    environment:
+      AWS_ENDPOINT_URL: http://localstack:4566
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_DEFAULT_REGION: us-east-1
+    depends_on:
+      localstack: {condition: service_healthy}
+    restart: "no"
+
+  migrate:
+    # Applies alembic migrations, then exits. api waits on this completing
+    # (service_completed_successfully) so it never boots against an unmigrated
+    # DB. NOT run inside the api entrypoint — that races across replicas.
+    build:
+      context: ../..
+      dockerfile: apps/api/Dockerfile
+    image: anime-api:latest
+    container_name: anime-migrate
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-anime}:${POSTGRES_PASSWORD:-anime}@postgres:5432/${POSTGRES_DB:-anime}
+    depends_on:
+      postgres: {condition: service_healthy}
+    restart: "no"
+
+  api:
+    build:
+      context: ../..
+      dockerfile: apps/api/Dockerfile
+    image: anime-api:latest
+    container_name: anime-api
+    # Secrets (OPENAI_API_KEY, GROQ_API_KEY, CLERK_*) flow from .env.
+    env_file:
+      - ../../.env
+    environment:
+      # Host-specific overrides (win over .env): containers use service names.
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-anime}:${POSTGRES_PASSWORD:-anime}@postgres:5432/${POSTGRES_DB:-anime}
+      REDIS_URL: ${REDIS_URL_DOCKER:-redis://redis:6379/0}
+      # The reranker model is baked into the image at build time, so skip all
+      # HuggingFace Hub network calls at runtime — faster startup, works offline,
+      # and a HF outage can't slow the reranker warm-up.
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      AWS_ENDPOINT_URL: http://localstack:4566
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_DEFAULT_REGION: us-east-1
+      # Langfuse: override BOTH host vars so env_file localhost URLs don't leak in.
+      # Langfuse Python SDK v2+ reads LANGFUSE_BASE_URL; LANGFUSE_HOST is the alias.
+      # Resolves only when the obs tier is up (see header note).
+      LANGFUSE_HOST: http://langfuse-web:3000
+      LANGFUSE_BASE_URL: http://langfuse-web:3000
+      # OTel: default TRUE (safe — no collector unless obs is up).
+      # Set OTEL_SDK_DISABLED=false in .env when running `make obs` to enable tracing.
+      OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-true}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+    ports:
+      - "${API_PORT:-1005}:8000"
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+      sqs-init: {condition: service_completed_successfully}
+
+  web:
+    build:
+      context: ../../apps/web
+      dockerfile: Dockerfile
+      args:
+        # NEXT_PUBLIC_* is inlined at BUILD time — pass the Clerk publishable key
+        # as a build arg (from your shell env / .env). Falls back to empty.
+        NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:-}
+        # Browser-facing origin. Baked in for metadataBase (OG tags).
+        NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL:-http://localhost:${WEB_PORT:-1006}}
+        # Billing checkout stub (UI redesign 3D) — build-time; false = preview.
+        NEXT_PUBLIC_BILLING_ENABLED: ${NEXT_PUBLIC_BILLING_ENABLED:-false}
+    image: anime-web:latest
+    container_name: anime-web
+    environment:
+      # The BFF proxy calls the API server-side via this URL — service
+      # name, not localhost. CLERK_SECRET_KEY is server-only (runtime env).
+      API_BASE_URL: http://api:8000
+      CLERK_SECRET_KEY: ${CLERK_SECRET_KEY:-}
+      NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:-}
+      # Read at RUNTIME by the auth middleware to build Clerk return URLs against
+      # a browser-reachable origin (not the container's internal 0.0.0.0:3000).
+      NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL:-http://localhost:${WEB_PORT:-1006}}
+    ports:
+      - "${WEB_PORT:-1006}:3000"
+    depends_on:
+      api: {condition: service_healthy}
+
+  worker:
+    # Async SQS consumer. One service consuming the feedback queue
+    # for local demo; in K8s each queue gets its OWN Deployment +
+    # KEDA ScaledObject so they scale independently. Switch queue via WORKER_QUEUE.
+    build:
+      context: ../..
+      dockerfile: apps/worker/Dockerfile
+    image: anime-worker:latest
+    container_name: anime-worker
+    command: ["python", "-m", "anime_worker", "--queue", "feedback"]
+    env_file:
+      - ../../.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-anime}:${POSTGRES_PASSWORD:-anime}@postgres:5432/${POSTGRES_DB:-anime}
+      REDIS_URL: ${REDIS_URL_DOCKER:-redis://redis:6379/0}
+      AWS_ENDPOINT_URL: http://localstack:4566
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_DEFAULT_REGION: us-east-1
+      OTEL_SDK_DISABLED: "true"
+      WORKER_QUEUE: feedback
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      localstack: {condition: service_healthy}
+      sqs-init: {condition: service_completed_successfully}
+    restart: unless-stopped

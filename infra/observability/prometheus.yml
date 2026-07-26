@@ -1,0 +1,22 @@
+# Prometheus scrape config (local dev).
+#
+# The app emits OpenTelemetry metrics via OTLP push to the collector; the
+# collector's `prometheus` exporter re-exposes them at otel-collector:8889.
+# Prometheus scrapes that target here. Grafana then reads Prometheus.
+#
+#   app (OTLP push) -> otel-collector:8889/metrics -> Prometheus -> Grafana
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # The app's metrics, re-exposed by the OTel collector's prometheus exporter.
+  - job_name: otel-collector
+    static_configs:
+      - targets: ["otel-collector:8889"]
+
+  # Prometheus scraping itself (useful sanity target; always up).
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

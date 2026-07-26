@@ -1,0 +1,17 @@
+# api Service. Argo Rollouts manages the stable/canary endpoints behind this
+# selector during a canary; the ingress + web BFF target this ClusterIP.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "anime.name" . }}-api
+  namespace: {{ .Values.namespace }}
+  labels: {{- include "anime.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "anime.selectorLabels" . | nindent 4 }}
+    component: api
+  ports:
+    - name: http
+      port: 80
+      targetPort: {{ .Values.api.port }}

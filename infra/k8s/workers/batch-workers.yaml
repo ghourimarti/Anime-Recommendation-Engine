@@ -1,0 +1,101 @@
+# Ingestion + housekeeping workers.
+# These queues are bursty/rare (re-embed, nightly rollups), NOT latency-sensitive
+# like feedback — so they use minReplicaCount: 0 (scale-to-zero): no idle pod when
+# the queue is empty, KEDA spins one up on the first message. Contrast feedback
+# (min 1) which favors warm latency over saving one pod.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: anime-worker-ingestion
+  labels: { app: anime-worker, queue: ingestion }
+spec:
+  replicas: 0
+  selector: { matchLabels: { app: anime-worker, queue: ingestion } }
+  template:
+    metadata:
+      labels: { app: anime-worker, queue: ingestion }
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 10001, seccompProfile: { type: RuntimeDefault } }
+      serviceAccountName: anime-worker
+      containers:
+        - name: worker
+          image: anime-worker:latest
+          args: ["python", "-m", "anime_worker", "--queue", "ingestion"]
+          env:
+            - { name: WORKER_QUEUE, value: ingestion }
+            - { name: AWS_DEFAULT_REGION, value: us-east-1 }
+          envFrom: [{ secretRef: { name: anime-app-secrets } }]
+          resources:
+            requests: { cpu: "100m", memory: "256Mi" }
+            limits: { cpu: "1", memory: "1Gi" }   # re-embed is heavier (OpenAI batch)
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: anime-worker-ingestion
+spec:
+  scaleTargetRef: { name: anime-worker-ingestion }
+  minReplicaCount: 0          # scale-to-zero: no idle pod for a rare queue
+  maxReplicaCount: 5
+  pollingInterval: 30
+  cooldownPeriod: 300
+  triggers:
+    - type: aws-sqs-queue
+      metadata:
+        queueURL: https://sqs.us-east-1.amazonaws.com/PLACEHOLDER/anime-prod-ingestion
+        queueLength: "2"
+        activationQueueLength: "1"
+        awsRegion: us-east-1
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: anime-worker-housekeeping
+  labels: { app: anime-worker, queue: housekeeping }
+spec:
+  replicas: 0
+  selector: { matchLabels: { app: anime-worker, queue: housekeeping } }
+  template:
+    metadata:
+      labels: { app: anime-worker, queue: housekeeping }
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 10001, seccompProfile: { type: RuntimeDefault } }
+      serviceAccountName: anime-worker
+      containers:
+        - name: worker
+          image: anime-worker:latest
+          args: ["python", "-m", "anime_worker", "--queue", "housekeeping"]
+          env:
+            - { name: WORKER_QUEUE, value: housekeeping }
+            - { name: AWS_DEFAULT_REGION, value: us-east-1 }
+          envFrom: [{ secretRef: { name: anime-app-secrets } }]
+          resources:
+            requests: { cpu: "50m", memory: "128Mi" }
+            limits: { cpu: "500m", memory: "512Mi" }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: anime-worker-housekeeping
+spec:
+  scaleTargetRef: { name: anime-worker-housekeeping }
+  minReplicaCount: 0
+  maxReplicaCount: 3
+  pollingInterval: 30
+  cooldownPeriod: 300
+  triggers:
+    - type: aws-sqs-queue
+      metadata:
+        queueURL: https://sqs.us-east-1.amazonaws.com/PLACEHOLDER/anime-prod-housekeeping
+        queueLength: "5"
+        activationQueueLength: "1"
+        awsRegion: us-east-1

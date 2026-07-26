@@ -1,0 +1,75 @@
+# Workers — one Deployment + one KEDA ScaledObject per queue. `range` over
+# .Values.workers keeps it DRY:
+# feedback (min 1, warm), ingestion + housekeeping (min 0, scale-to-zero).
+{{- $root := . }}
+{{- range $queue, $cfg := .Values.workers }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "anime.name" $root }}-worker-{{ $queue }}
+  namespace: {{ $root.Values.namespace }}
+  labels:
+    {{- include "anime.labels" $root | nindent 4 }}
+    queue: {{ $queue }}
+spec:
+  replicas: {{ $cfg.minReplicas }}   # KEDA owns the live count (ScaledObject below)
+  selector:
+    matchLabels:
+      {{- include "anime.selectorLabels" $root | nindent 6 }}
+      component: worker
+      queue: {{ $queue }}
+  template:
+    metadata:
+      labels:
+        {{- include "anime.selectorLabels" $root | nindent 8 }}
+        component: worker
+        queue: {{ $queue }}
+    spec:
+      serviceAccountName: {{ $root.Values.serviceAccount.worker.name }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: worker
+          image: {{ include "anime.image" (dict "root" $root "img" $root.Values.image.worker) | quote }}
+          imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+          args: ["python", "-m", "anime_worker", "--queue", "{{ $queue }}"]
+          env:
+            - { name: WORKER_QUEUE, value: "{{ $queue }}" }
+          envFrom:
+            - configMapRef: { name: {{ include "anime.name" $root }}-config }
+            - secretRef: { name: {{ $root.Values.externalSecrets.targetName }} }
+          livenessProbe:
+            exec: { command: ["python", "-c", "import anime_worker"] }
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources: {{- toYaml $root.Values.workerResources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ include "anime.name" $root }}-worker-{{ $queue }}
+  namespace: {{ $root.Values.namespace }}
+  labels:
+    {{- include "anime.labels" $root | nindent 4 }}
+    queue: {{ $queue }}
+spec:
+  scaleTargetRef:
+    name: {{ include "anime.name" $root }}-worker-{{ $queue }}
+  minReplicaCount: {{ $cfg.minReplicas }}
+  maxReplicaCount: {{ $cfg.maxReplicas }}
+  triggers:
+    - type: aws-sqs-queue
+      metadata:
+        queueURL: "{{ $root.Values.sqsQueueUrlBase }}/{{ $root.Values.config.sqsQueuePrefix }}-{{ $queue }}"
+        queueLength: "{{ $cfg.queueLength }}"
+        activationQueueLength: "{{ $cfg.activationQueueLength }}"
+        awsRegion: {{ $root.Values.awsRegion }}
+        identityOwner: workload   # KEDA reads depth via the worker SA's IRSA role
+{{- end }}
