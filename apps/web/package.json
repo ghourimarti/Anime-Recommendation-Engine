@@ -1,0 +1,65 @@
+{
+  "name": "anime-recommender-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "//packageManager": "Pin pnpm so corepack uses the SAME version in Docker/CI as locally — without this, corepack grabs latest (pnpm 11.x), which mismatches the lockfile generator and changes build-script behavior.",
+  "packageManager": "pnpm@10.33.2",
+  "description": "Next.js (App Router) frontend — streaming RAG UX + Clerk auth",
+  "author": "Zain Ul Abdin",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "@clerk/nextjs": "^6.9.0",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "cmdk": "^1.1.1",
+    "framer-motion": "^12.40.0",
+    "lucide-react": "^0.469.0",
+    "next": "^15.1.3",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "sonner": "^1.7.1",
+    "tailwind-merge": "^2.6.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.1",
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.1.0",
+    "@types/node": "^22.10.5",
+    "@types/react": "^19.0.2",
+    "@types/react-dom": "^19.0.2",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.20",
+    "eslint": "^8.57.1",
+    "eslint-config-next": "^15.1.3",
+    "jsdom": "^25.0.1",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.17",
+    "tailwindcss-animate": "^1.0.7",
+    "typescript": "^5.7.2",
+    "vitest": "^3.2.6"
+  },
+  "pnpm": {
+    "//": "pnpm 10 blocks lifecycle/build scripts unless explicitly approved. In a --frozen-lockfile Docker build that's a hard error, so we allow-list the packages that genuinely need a native build: sharp (next/image), esbuild (vitest), plus Clerk's + the resolver's postinstalls.",
+    "onlyBuiltDependencies": [
+      "sharp",
+      "esbuild",
+      "@clerk/shared",
+      "unrs-resolver"
+    ],
+    "//overrides": "Transitive deps we don't declare but that carry advisories the CI dependency audit blocks on. vitest was bumped 2.x -> 3.x directly (GHSA-5xrq-8626-4rwp, CRITICAL); these two arrive underneath other packages, so an override is the only way to force a safe version. Drop an entry once the parent ships a fixed range on its own.",
+    "overrides": {
+      "vite": ">=6.4.3",
+      "form-data": ">=4.0.6"
+    }
+  }
+}

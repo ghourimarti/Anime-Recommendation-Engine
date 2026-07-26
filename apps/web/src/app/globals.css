@@ -1,0 +1,93 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Cinematic Noir theme (Marquee Amber accent).
+   Dark-first: the app forces `.dark` on <html> (see layout.tsx), so :root and
+   .dark carry the SAME Noir palette — there is no light mode. Keeping both in
+   sync avoids any pre-hydration light flash.
+   Tokens are shadcn/ui's `H S% L%` triplets, consumed as hsl(var(--x)).
+   ───────────────────────────────────────────────────────────────────────── */
+@layer base {
+  :root,
+  .dark {
+    /* Surfaces — graded cool charcoals over near-black ink. */
+    --background: 240 14% 5%; /* #0B0B0F app base */
+    --foreground: 240 5% 96%; /* #F4F4F5 primary text */
+    --card: 240 11% 9%; /* #141419 elevated panels */
+    --card-foreground: 240 5% 96%;
+    --popover: 240 11% 9%;
+    --popover-foreground: 240 5% 96%;
+
+    /* Marquee Amber — the ONE accent. CTAs, match-score, focus ring only. */
+    --primary: 44 79% 57%; /* #E8B339 */
+    --primary-foreground: 240 14% 7%; /* dark ink on amber for contrast */
+
+    /* Secondary / muted / hover surfaces — never the accent. */
+    --secondary: 240 13% 13%; /* #1C1C24 surface-2 */
+    --secondary-foreground: 240 5% 96%;
+    --muted: 240 11% 14%;
+    --muted-foreground: 240 5% 65%; /* #A1A1AA metadata */
+    --accent: 240 13% 16%; /* shadcn "accent" = subtle hover bg */
+    --accent-foreground: 240 5% 96%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 98%;
+
+    /* Success — plan badges, "included" checkmarks (3A token extension). */
+    --success: 158 64% 52%; /* #34D399 */
+    --success-foreground: 240 14% 7%;
+
+    --border: 240 10% 18%; /* #2A2A33 hairline */
+    --input: 240 10% 18%;
+    --ring: 44 79% 57%; /* amber focus ring */
+
+    --radius: 0.75rem;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground font-sans;
+    /* Subtle amber spotlight bleeding from the top — pure cinema. */
+    background-image: radial-gradient(
+      ellipse 80% 50% at 50% -10%,
+      hsl(44 79% 57% / 0.06),
+      transparent 60%
+    );
+    background-attachment: fixed;
+  }
+  /* Page-level headings carry the editorial serif; card titles stay sans. */
+  h1,
+  h2 {
+    @apply font-display;
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Film-grain overlay. A fixed, non-interactive layer of fractal noise at very
+   low opacity — the texture that separates "premium cinema" from "flat dark
+   theme". Rendered once in layout.tsx as <div class="noise-overlay" />.
+   ───────────────────────────────────────────────────────────────────────── */
+.noise-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  pointer-events: none;
+  opacity: 0.035;
+  background-image: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='200'%20height='200'%3E%3Cfilter%20id='n'%3E%3CfeTurbulence%20type='fractalNoise'%20baseFrequency='0.85'%20numOctaves='4'%20stitchTiles='stitch'/%3E%3C/filter%3E%3Crect%20width='100%25'%20height='100%25'%20filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
