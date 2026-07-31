@@ -42,10 +42,6 @@ switch**, and is instrumented end-to-end (OpenTelemetry traces, Langfuse LLM cos
 Prometheus/Grafana metrics). It ships with a **CI eval gate**, async SQS workers, and a full
 local→cloud path (Docker → Helm/EKS → Terraform).
 
-> The corpus is the public [MyAnimeList](https://myanimelist.net/) dataset (title, genres, synopsis,
-> score). The CSV itself isn't committed to this repo — supply your own at
-> `data/anime_with_synopsis.csv` before running `make ingest`.
-
 ---
 
 ## ✨ Features
