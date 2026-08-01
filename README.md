@@ -68,20 +68,20 @@ local→cloud path (Docker → Helm/EKS → Terraform).
 <div align="center">
 
 ### Landing Page
-![Landing page](docs/assets/screenshots/landing.png)
+![Landing page](assets/screenshots/landing.png)
 *The marketing/landing page (`apps/web` App Router).*
 
 ### Query & Streaming Recommendations
-![Query and streaming recommendations](docs/assets/screenshots/recommend.png)
+![Query and streaming recommendations](assets/screenshots/recommend.png)
 *Ask in natural language → grounded recommendation cards → the "why it matches" explanation streams in below.*
 
 ### Langfuse
-![Langfuse trace list](docs/assets/screenshots/langfuse-traces.png)
-![Langfuse trace detail](docs/assets/screenshots/langfuse-trace-detail.png)
+![Langfuse trace list](assets/screenshots/langfuse-traces.png)
+![Langfuse trace detail](assets/screenshots/langfuse-trace-detail.png)
 *Per-call LLM traces (latency, tokens, cost) and one call's full execution graph — the tiered LLM gateway traced end-to-end.*
 
 ### Real-time Monitoring
-![Grafana API overview dashboard](docs/assets/screenshots/grafana.png)
+![Grafana API overview dashboard](assets/screenshots/grafana.png)
 *Request rate, p95 latency, LLM spend, and per-model cost — OTel → Collector → Prometheus → Grafana.*
 
 </div>
