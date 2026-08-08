@@ -209,12 +209,12 @@ Anime-Recommendation-Engine/
 > The repo is **driven by a `Makefile`**. The containerised stack is **three compose files under one
 > Docker project** (`anime-recommender`) — a **data** tier, an **app** tier, and an **observability**
 > tier — so tiers share one network and start independently. **Every host port + credential lives in
-> `.env`** (a `1002–1019` scheme so the whole stack fits on one machine).
+> `.env`** (a `1002–1019` scheme).
 
 ### Prerequisites
-- **Python 3.13** and [`uv`](https://docs.astral.sh/uv/) (uv provisions the interpreter for you)
+- **Python 3.13** and [`uv`](https://docs.astral.sh/uv/) 
 - **Docker + Docker Compose**
-- **Node 22 + pnpm** (only for native web dev; the Docker path builds the web for you)
+- **Node 22 + pnpm** (only for native web dev; the Docker path builds the web  image)
 - An **`OPENAI_API_KEY`** — required (embeddings + the fallback LLM). `GROQ_API_KEY` is used for the
   primary/escalation tiers; `CLERK_*` keys are needed to actually sign in through the UI.
 
@@ -240,7 +240,7 @@ make urls                            # print every UI URL + login (ports/creds f
 > `upv` is the cold-boot button (`downv` → `up` → `db-migrate` → `ingest`). Expect a few minutes on a
 > cold machine; the observability tier's ClickHouse + Langfuse migrations continue for ~1–3 min after.
 
-### 3-alt · Bring it up tier by tier
+### 3-1 · Bring it up tier by tier
 ```bash
 make db                              # tier 1 — data: postgres + redis + localstack
 make db-migrate                      # alembic upgrade head
@@ -250,7 +250,7 @@ make obs                             # tier 3 (optional) — otel-collector + La
 make urls                            # print every URL
 ```
 
-### 3-alt2 · Native hot-reload dev
+### 3-al2 · Native hot-reload dev
 ```bash
 make db                              # data tier in Docker
 make dev-api                         # FastAPI on :1005 (uvicorn --reload)   [terminal 1]
@@ -267,8 +267,7 @@ curl -X POST http://localhost:1005/v1/recommend \
   -H "Authorization: Bearer $TOKEN" -H "content-type: application/json" \
   -d '{"query":"light hearted school anime with a strong female lead"}'
 ```
-> Then open **http://localhost:1006** → sign in (Clerk) → ask a question → watch the recommendation
-> cards render and the explanation stream in.
+
 
 **Service map** (host ports from `.env`):
 
@@ -329,7 +328,7 @@ files under one project; all targets read ports + secrets from `.env`.
 | Command | What it does |
 |---|---|
 | `make load-validate` | Syntax-check all k6 scripts (no k6 needed). |
-| `make load-smoke` / `load-baseline` / `load-peak` / `load-ramp` / `load-stream` | k6 scenarios (need `K6_AUTH_TOKEN`; see [`tests/load/README.md`](tests/load/README.md)). |
+| `make load-smoke` / `load-baseline` / `load-peak` / `load-ramp` / `load-stream` | k6 scenarios |
 | `make audit-secrets` / `audit-deps` / `audit-licenses` / `audit-all` | Supply-chain audits. |
 | `make chaos-llm` / `chaos-pg` / `chaos-net` / `chaos-restore` | Chaos drills (stack must be up). |
 | `make backup-dump` / `backup-restore DUMP=...` / `backup-drill` | Backup + restore-drill. |
