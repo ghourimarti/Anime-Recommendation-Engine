@@ -89,17 +89,11 @@ load_report.json
 .promptfoo/
 
 # Local-only reference material (not part of the published project)
-Prompts/
-demo/
-docs/
-
+Documents/
 # Local-only planning / working notes — kept on disk, excluded from the repo.
 # NOTE: files already committed stay tracked until `git rm --cached <path>` — see
 # the untrack command list handed over with this change.
-docs/decision-log.md
-docs/inspection-report.md
-docs/demo-script.md
-docs/redesign/
+
 
 # Eval reports
 eval_report.json
