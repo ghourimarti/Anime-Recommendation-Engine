@@ -151,10 +151,15 @@ class _LangChainClient:
         model_name: str,
         chat_model: ChatGroq | ChatOpenAI,
         callbacks: list[Any] | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         self._model_name = model_name
         self._chat = chat_model
         self._callbacks = callbacks
+        # Per-client trace metadata (e.g. {"langfuse_tags": [...]}), merged into
+        # the invocation config. Optional and None for every pre-existing client,
+        # so their emitted config is byte-identical to before this parameter existed.
+        self._metadata = metadata
 
     @property
     def model(self) -> str:
@@ -163,7 +168,10 @@ class _LangChainClient:
     def _invoke_config(self) -> RunnableConfig | None:
         if not self._callbacks:
             return None
-        return RunnableConfig(callbacks=self._callbacks)
+        config = RunnableConfig(callbacks=self._callbacks)
+        if self._metadata:
+            config["metadata"] = self._metadata
+        return config
 
     async def recommend(self, *, query: str, context: str) -> Recommendations:
         # `include_raw=True` surfaces both the parsed structured output AND the
@@ -549,9 +557,30 @@ def build_default_llm_client(
     every LLM call emits its Langfuse trace regardless of tier selection.
 
     This is what `lifespan.py` wires onto `app.state.llm`.
+
+    VENUE ROUTING (D4b) IS OPT-IN AND OFF BY DEFAULT. When
+    LLM_VENUE_ROUTING_ENABLED is false, `VenueRoutedClient` is never
+    constructed and `inner` is exactly the tiered client that has always been
+    here — so the flag-off path is not "a branch we believe is equivalent", it
+    is the same objects in the same order as before venue.py existed.
     """
+    inner: LLMClient = build_default_tiered_client(callbacks=callbacks)
+
+    # Imported INSIDE the function on purpose: venue.py imports _LangChainClient,
+    # LLMClient and ResilientLLMClient from this module, so a module-level import
+    # here would be circular. Deferring it also means the venue module is not even
+    # loaded when the flag is off.
+    from anime_core.venue import VenueRoutedClient, build_venue_client, venue_enabled
+
+    if venue_enabled():
+        inner = VenueRoutedClient(
+            venue=build_venue_client(callbacks=callbacks),
+            hosted=inner,
+        )
+        logger.info("venue routing ENABLED — self-hosted venue is first for confident queries")
+
     return BudgetedLLMClient(
-        inner=build_default_tiered_client(callbacks=callbacks),
+        inner=inner,
         max_input_tokens=llm_max_input_tokens(),
         max_output_tokens=llm_max_output_tokens(),
     )

@@ -1,0 +1,27 @@
+# Base image digest lock (P6.1) — the single source of truth for what we build ON.
+#
+# WHY A LOCKFILE AND NOT ARG DEFAULTS
+# -----------------------------------
+# `node:22-alpine` today and `node:22-alpine` next month are different bytes. A
+# rebuild that silently changes its base makes "reproducible build" decorative,
+# and it means the artifact you signed and verified is not necessarily the
+# artifact you deployed. Digests fix that; a lockfile keeps the three
+# Dockerfiles from drifting apart and makes a bump a one-file diff.
+#
+# FORMAT: shell-sourceable KEY=value. Consumed by:
+#   - .github/workflows/release.yml   (build-args, the signed artifact)
+#   - .github/workflows/ci.yml        (build-args, so CI scans what we ship)
+#   - Makefile                        (local builds)
+#   - docker-compose.yml              (via env)
+#
+# Each entry is tag@sha256 on purpose: the tag is for humans reading a diff,
+# the digest is what Docker actually resolves. Never drop the digest.
+#
+# TO BUMP: run `make base-images-refresh`, review the diff, commit it as its own
+# change. A base image bump is a supply-chain event and deserves its own commit
+# and its own Trivy result — not a line buried in a feature PR.
+#
+# Last refreshed: 2026-09-12
+
+UV_IMAGE=ghcr.io/astral-sh/uv:python3.13-bookworm-slim@sha256:531f855bda2c73cd6ef67d56b733b357cea384185b3022bd09f05e002cd144ca
+NODE_IMAGE=node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32

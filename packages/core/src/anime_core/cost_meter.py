@@ -95,14 +95,40 @@ def parse_pricing(raw: str) -> dict[str, tuple[Decimal, Decimal]]:
     return table
 
 
+def _self_hosted_zero_rate() -> dict[str, tuple[Decimal, Decimal]]:
+    """Price the self-hosted venue model at zero per token (D4b).
+
+    Self-hosted tokens have no MARGINAL cost — the GPU is already paid for and
+    running. That is a fact about the deployment, not a pricing preference, so
+    it should not depend on somebody remembering to edit LLM_PRICING.
+
+    Without this, enabling LLM_VENUE_ROUTING_ENABLED with an unedited
+    LLM_PRICING kills the first venue-served request with UnknownModelError —
+    on the hot path, in production, for a purely cosmetic config omission.
+
+    This is NOT a claim that the venue is free. GPU-hours, power and the card
+    itself are real costs; they are just not per-token, so they are amortised
+    in docs/GPU_VENUE.md rather than invented into a per-token rate with a
+    denominator (requests/hour) nobody has measured. An explicit LLM_PRICING
+    entry still wins — see get_pricing().
+    """
+    model = os.environ.get("LLM_VENUE_MODEL", "").strip()
+    if not model:
+        return {}
+    return {model: (Decimal("0"), Decimal("0"))}
+
+
 @lru_cache(maxsize=1)
 def get_pricing() -> dict[str, tuple[Decimal, Decimal]]:
     """The process-wide price table, read once from LLM_PRICING.
 
     Lazy (not import-time) so importing anime_core never explodes; the first
     actual cost calculation is what forces the config to be present and valid.
+
+    The self-hosted venue model is merged in at zero FIRST, so an explicit
+    LLM_PRICING entry for the same model overrides it — config beats default.
     """
-    return parse_pricing(os.environ.get(PRICING_ENV_VAR, ""))
+    return {**_self_hosted_zero_rate(), **parse_pricing(os.environ.get(PRICING_ENV_VAR, ""))}
 
 
 class CostMeter:

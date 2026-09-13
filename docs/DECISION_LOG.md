@@ -75,7 +75,8 @@ Legend: **★** = chosen option · **Prod-grade** ✓ = production-appropriate �
 | 9 | AuthN / AuthZ | Clerk / Auth.js / AWS Cognito / Supabase Auth | **★** Clerk (email + Google + Discord OAuth) | Fastest to ship credible multi-tenant consumer auth | ✓ | M | Clerk >$200/mo (~70k MAU) → migrate to Auth.js |
 | 10 | Caching strategy | Redis (ElastiCache) / in-process LRU / Memcached / Upstash | **★** Redis: normalized-response + embedding caches | Cost+latency lever. ⚠️ **Revised 2026-07-14**: semantic cache REMOVED — measured unsafe at any threshold (antonym pairs out-score paraphrases on cosine) | ✓ | E | Revised — see D10 |
 | 11 | Queue / async work | ARQ+SQS / Celery+Redis / SQS+EKS workers / Lambda / Temporal | **★** SQS + dedicated EKS worker Deployments (KEDA autoscale on queue depth) | One queue system; KEDA-native; cleaner separation | ✓ | E | None foreseen |
-| 12 | Inference serving | Groq API / Bedrock / vLLM self-host / SageMaker | **★** Groq hosted API (with OpenAI as fallback per D4) | Fastest TTFT in market; right unit economics at our scale | ✓* | M | Sustained Groq cost >$2k/mo OR SLA miss → vLLM |
+| 4b | Multi-venue serving | Hosted only / +vLLM self-host / +SGLang self-host / both engines | **★** +vLLM self-hosted venue, dark behind `LLM_VENUE_ROUTING_ENABLED=false` | Measured: 38 ms TTFT, 67.9 tok/s — inside NFR by 20–45×. vLLM over SGLang on operational cost, not speed (2.6% gap) | ✓ | E | Workload gains long shared prefixes → re-measure, SGLang may win |
+| 12 | Inference serving | Groq API / Bedrock / vLLM self-host / SageMaker | **★** Groq hosted API (with OpenAI as fallback per D4); **+ self-hosted venue per D4b** | Fastest TTFT in market; right unit economics at our scale | ✓* | M | Sustained Groq cost >$2k/mo OR SLA miss → vLLM |
 | 13 | Observability | OTel→Grafana + Langfuse / LangSmith / Datadog / Full self / CloudWatch only | **★** OTel SDK → Grafana Cloud (free tier) + Langfuse (self-host on EKS) | Portable instrumentation; covers app + LLM-specific layers | ✓ | H (high — OTel makes backend portable) | Grafana free tier exceeded |
 | 14 | Cloud provider | AWS / GCP / Azure / Multi-cloud | **★** AWS, us-east-1, single region v1 | Broadest managed-service coverage; single-cloud simplicity | ✓ | H | EU MAU >10% of total → consider eu-west-1 secondary |
 | 15 | Container / orch / IaC | EKS+Helm+Terraform (pre-locked) / ECS Fargate / Cloud Run | **★** EKS (managed K8s) + Helm + Terraform (modular) | Managed Kubernetes + modular IaC | ✓ | H | None foreseen |
@@ -187,6 +188,42 @@ trade-offs, and revisit triggers.
 **Trade-offs accepted:** Routing layer adds complexity; mixed-provider cost forecasting messier.
 
 **Reversibility:** **Easy** — model strings in config, providers behind adapter.
+
+
+---
+
+### Decision 4b — Multi-venue serving **[ADDED 2026-09-12]**
+
+**Question:** Should a self-hosted open-weight venue join the tiering strategy alongside the hosted APIs, and if so, which engine?
+
+**Context:** D4 and D12 both deferred self-hosting with the trigger "sustained Groq cost >$2k/mo OR SLA misses". That deferral was made on *estimated* economics with no measured latency data for a self-hosted venue. S19/S20 removed the estimate.
+
+**Options:**
+- A — Hosted APIs only (status quo per D4/D12): simplest; no GPU ops; every token billed.
+- B — Add a self-hosted vLLM venue as a third tier: $0/token for the simple end of the workload; adds a GPU dependency and a SPOF.
+- C — Add a self-hosted SGLang venue instead: ~2.8% faster decode; 52.2 GB image; less mature ecosystem.
+- D — Run both engines in production: maximum flexibility; doubles operational surface for a 3% difference.
+
+**Decision:** **B — add a self-hosted vLLM venue as an optional tier**, shipped dark behind `LLM_VENUE_ROUTING_ENABLED=false`. SGLang is retained as a benchmarked alternative with a documented flip condition, not as a parallel production tier.
+
+**Measured evidence** (`docs/GPU_VENUE.md`, Qwen2.5-7B-AWQ on RTX 3060, 20 runs, quiet host):
+
+| | vLLM | SGLang | NFR |
+|---|---|---|---|
+| TTFT p50 | 38.2 ms | 39.9 ms | < 800 ms |
+| TTFT p99 | **93.5 ms** | 249.5 ms | — |
+| tok/s | 67.9 | **69.8** | — |
+| total, 146 tok | 2203 ms | **2145 ms** | < 8000 ms p95 |
+
+**Reasoning:** The deferral in D4/D12 assumed self-hosting could not meet latency needs at small scale. It can — by 20–45×. The engine choice, however, is *not* decided by speed: a 2.6% total-time gap is inside the noise of an N=20 sample. vLLM wins on operational cost — 23 GB smaller image, faster cold start, 2.67× better TTFT tail, larger ecosystem.
+
+**Trade-offs accepted:** A home GPU is a single point of failure with no HA and a residential uplink — so the venue is *additive*, never load-bearing: the fallback chain (self-hosted → Groq 8B → Groq 70B → OpenAI) must remain proven. Cost attribution gets harder: self-hosted is $0/token but GPU-hours are real and must be amortised separately in the cost meter. Production use requires a GPU node group, which is a separate cost decision (P9.6).
+
+**Reversibility:** **Easy** — the venue is behind a feature flag that defaults off, registered as one more entry in the venue registry. Disabling it restores exactly today's behaviour.
+
+**Flip condition (engine):** SGLang's RadixAttention advantage is invisible on this workload (10 distinct short prompts, no shared prefixes beyond the system message). **If the workload gains long shared contexts — multi-turn chat, agent loops, batch over a shared document — re-measure; the recommendation may invert.**
+
+**Supersedes:** the "self-host only above ~150 QPS" reasoning in D12, which was about *cost* economics and remains true for that question. D4b is about *capability*: self-hosting is now a proven option at any scale, gated on operational readiness rather than QPS.
 
 
 ---
@@ -414,13 +451,15 @@ Cosine alone is not.
 - C — vLLM self-host on EKS GPU: control + cost at very high QPS; bad economics below ~150 QPS to a single model.
 - D — SageMaker endpoints: managed self-host; most expensive AWS-native.
 
-**Decision:** **Groq hosted API** (primary), **OpenAI** (fallback per D4). vLLM self-host documented as v2 trigger.
+**Decision:** **Groq hosted API** (primary), **OpenAI** (fallback per D4). Self-hosted vLLM **added as an optional third venue per D4b** (2026-09-12), shipped dark behind a feature flag.
 
 **Reasoning:** At 100k MAU with 30%+ cache hit, our call volume is well within Groq's rate envelope and cost ceiling. Self-host GPU economics only pay at sustained >~150 QPS to one model.
 
 **Trade-offs accepted:** Vendor concentration risk on Groq (mitigated by OpenAI fallback).
 
 **Reversibility:** **Moderate** — `LLMClient` interface is the abstraction. Trigger: sustained Groq cost >$2k/mo OR SLA misses → vLLM.
+
+**[AMENDED 2026-09-12 by D4b]** The "self-host only above ~150 QPS" reasoning was a *cost* argument and remains valid for that question. It was also read as an implicit *capability* claim — that self-hosting could not meet our latency needs at small scale. S19/S20 measured that and found the opposite: vLLM serves this workload at 38 ms TTFT / 67.9 tok/s, inside every NFR by 20–45×. Self-hosting is therefore gated on operational readiness (HA, GPU node group, cost attribution), not on QPS. See `docs/GPU_VENUE.md`.
 
 
 ---
@@ -719,6 +758,8 @@ anime-recommender/
 | 2026-05-26 | D11 | Queue: ARQ + SQS → SQS-only + EKS workers | User direction; one queue system; ARQ removed |
 | 2026-05-27 | D3 | MMR λ tuned 0.7 → 0.85 (config-driven via `MMR_LAMBDA`) | Step 4 golden-eval showed λ=0.7 over-diversified, regressing recall@3 −0.050 on franchise queries while reranker improved rank-1 +0.091. Higher λ favors relevance. |
 | 2026-05-27 | D5 | `text-embedding-3-small` **accepted** (quality A/B vs 3-large not run) | Step 4 baseline solid in absolute terms (success@3=0.818); user accepted on cost (5×) + latency rather than run the 3-large comparison. Open item: unproven relative to 3-large. |
+| 2026-09-12 | **D4b added** | Self-hosted vLLM venue added as an optional third tier, dark behind `LLM_VENUE_ROUTING_ENABLED=false` | Measured, not estimated: vLLM serves this workload at 38.2 ms TTFT / 67.9 tok/s on an RTX 3060 — inside every NFR by 20–45×. SGLang benchmarked head-to-head under verified condition parity; vLLM chosen on operational cost (23 GB smaller image, faster cold start, 2.67× better TTFT p99), not speed (2.6% gap, inside N=20 noise). See `docs/GPU_VENUE.md`. |
+| 2026-09-12 | D12 amended | "Self-host only above ~150 QPS" clarified as a *cost* argument, not a *capability* claim | The QPS threshold was being read as "self-hosting can't meet our latency needs at small scale." Measurement refuted that. Self-hosting is now gated on operational readiness (HA, GPU node group, cost attribution), not throughput. |
 
 ---
 

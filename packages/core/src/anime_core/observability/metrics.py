@@ -21,6 +21,8 @@ backend falls over.
 
 from __future__ import annotations
 
+import math
+
 from opentelemetry import metrics
 from opentelemetry.util.types import Attributes
 
@@ -124,6 +126,66 @@ _refusals = _meter.create_counter(
 def record_refusal() -> None:
     """Record an honest refusal. Not a failure — the alternative is a confident lie."""
     _refusals.add(1)
+
+
+# ── self-hosted venue routing (D4b) ──────────────────────────────────────────
+# The venue falls through to the hosted chain on any failure, which means it can
+# be completely broken while the product looks fine. That exact failure mode has
+# already bitten this system twice: the OpenAI fallback silently carried ~50% of
+# traffic while masking Groq's tool-call bug, and a working rerank fallback hid a
+# 37x tail-latency problem. A resilience mechanism that works perfectly is also a
+# mechanism that hides what it is compensating for. So: measure the fall-throughs.
+_venue_decisions = _meter.create_counter(
+    "anime.llm.venue.decisions",
+    unit="1",
+    description=(
+        "Venue routing outcomes. decision=hosted (confidence below threshold, the "
+        "normal majority), venue_served (self-hosted answered), venue_fallback_error "
+        "(venue raised), venue_fallback_empty (venue returned nothing usable). "
+        "ALERT ON: venue_fallback_* / (venue_served + venue_fallback_*) rising — the "
+        "venue is degrading and the hosted chain is quietly absorbing the cost."
+    ),
+)
+_retrieval_confidence = _meter.create_histogram(
+    "anime.retrieval.confidence",
+    unit="1",
+    description=(
+        "Top-1 rerank relevance at routing time, as a 0-1 probability — sigmoid of "
+        "the raw cross-encoder logit (see record_retrieval_confidence for why it is "
+        "not the raw logit). The routing threshold is 1.0 in LOGIT space, which is "
+        "0.731 here. The threshold was derived from the golden set, which is curated "
+        "and is NOT production traffic; this histogram is how you find out the live "
+        "distribution has drifted from the measured one, at which point the threshold "
+        "needs re-deriving rather than nudging. Absent when the reranker timed out."
+    ),
+)
+
+
+def record_venue_decision(*, decision: str) -> None:
+    """Record one venue routing outcome. See _venue_decisions for the alert."""
+    _venue_decisions.add(1, {"decision": decision})
+
+
+def record_retrieval_confidence(logit: float) -> None:
+    """Record the routing signal, converted to a 0-1 probability.
+
+    WHY NOT THE RAW LOGIT. The first version recorded the cross-encoder score
+    directly and silently recorded NOTHING for most queries: OTel histograms
+    reject negative values, and these logits run roughly -11 to +7, so the
+    majority are negative. The SDK logs one warning per rejected record and
+    drops it - a metric that looks wired up and is quietly empty for exactly
+    the population you most want to see.
+
+    Sigmoid is the principled fix rather than an offset hack: it is the
+    probability the cross-encoder is actually expressing, it is monotonic in the
+    logit (so distribution SHAPE and all percentile comparisons are preserved),
+    and it is bounded in (0, 1), which is well-behaved for histogram buckets.
+
+    Routing still compares the RAW logit against the raw threshold - this
+    conversion is for the metric only, so the routing decision is never
+    mediated by a lossy transform.
+    """
+    _retrieval_confidence.record(1.0 / (1.0 + math.exp(-logit)))
 
 
 # ── worker / queue ───────────────────────────────────────────────────────────

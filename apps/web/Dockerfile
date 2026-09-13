@@ -11,6 +11,10 @@
 # `output: "standalone"` in next.config.mjs is what makes the runtime image ~120MB
 # instead of ~1GB — Next copies only the traced node_modules, not all of them.
 
+# BASE IMAGE: the authoritative pin lives in base-images.lock at the repo root,
+# which CI, the Makefile and docker-compose all inject as a build-arg. The tag
+# below is a readable FALLBACK for a bare `docker build` — it is NOT pinned, so
+# an image built without the build-arg is not the reproducible artifact we sign.
 ARG NODE_IMAGE=node:22-alpine
 
 # ─── Stage 1: deps ───────────────────────────────────────────────────────────

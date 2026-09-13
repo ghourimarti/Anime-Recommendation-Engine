@@ -85,6 +85,15 @@ services:
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test
       AWS_DEFAULT_REGION: us-east-1
+      # Self-hosted venue (D4b): same localhost-leak problem as Langfuse below.
+      # .env carries http://localhost:8001/v1 for a HOST-run API (make dev-api).
+      # Inside this container localhost is the container, so the venue would be
+      # unreachable and EVERY request would silently fall through to the hosted
+      # chain - working, but never using the GPU you started.
+      # `anime-venue` is a network alias BOTH engines claim, so this URL is
+      # identical whether vLLM or SGLang is running. Resolves only when a venue
+      # container is up; when it is not, the fall-through is the correct answer.
+      LLM_VENUE_URL: ${LLM_VENUE_URL_DOCKER:-http://anime-venue:8000/v1}
       # Langfuse: override BOTH host vars so env_file localhost URLs don't leak in.
       # Langfuse Python SDK v2+ reads LANGFUSE_BASE_URL; LANGFUSE_HOST is the alias.
       # Resolves only when the obs tier is up (see header note).
@@ -143,6 +152,10 @@ services:
     env_file:
       - ../../.env
     environment:
+      # Same localhost-leak guard as the api service. The worker does not call
+      # the LLM today; this is here so that when it does, it does not quietly
+      # inherit a URL that points at itself.
+      LLM_VENUE_URL: ${LLM_VENUE_URL_DOCKER:-http://anime-venue:8000/v1}
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-anime}:${POSTGRES_PASSWORD:-anime}@postgres:5432/${POSTGRES_DB:-anime}
       REDIS_URL: ${REDIS_URL_DOCKER:-redis://redis:6379/0}
       AWS_ENDPOINT_URL: http://localstack:4566

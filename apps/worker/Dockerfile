@@ -7,6 +7,10 @@
 # anime-ingestion but NOT anime-retrieval → no sentence-transformers/torch →
 # ~300MB instead of 2.2GB. The worker never reranks, so it carries no ML stack.
 
+# BASE IMAGE: the authoritative pin lives in base-images.lock at the repo root,
+# which CI, the Makefile and docker-compose all inject as a build-arg. The tag
+# below is a readable FALLBACK for a bare `docker build` — it is NOT pinned, so
+# an image built without the build-arg is not the reproducible artifact we sign.
 ARG UV_IMAGE=ghcr.io/astral-sh/uv:python3.13-bookworm-slim
 
 # ─── Stage 1: builder ────────────────────────────────────────────────────────

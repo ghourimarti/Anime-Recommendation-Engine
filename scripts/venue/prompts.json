@@ -1,0 +1,25 @@
+{
+  "_comment": [
+    "Fixed prompt set for GPU venue benchmarking — S19.6 (vLLM) and S20.5 (SGLang).",
+    "IDENTICAL input for both engines so the engine is the only variable.",
+    "Do not edit between S19 and S20 runs; doing so voids the comparison.",
+    "Shape matches the app's real query distribution: short natural-language",
+    "anime preference queries, 10-30 tokens, low length variance."
+  ],
+  "version": 1,
+  "system": "You are an expert anime recommender. Recommend exactly 3 anime titles. For each, give the title and one sentence explaining why it matches.",
+  "max_tokens": 256,
+  "temperature": 0.0,
+  "prompts": [
+    "light-hearted school anime with a strong female lead",
+    "psychological thriller with an unreliable narrator, under 24 episodes",
+    "something like Cowboy Bebop but more recent",
+    "slow-paced slice of life, nothing too emotional",
+    "dark fantasy with good worldbuilding and no filler",
+    "sports anime where the underdog team actually loses sometimes",
+    "sci-fi that takes its own premise seriously",
+    "a comedy that is genuinely funny, not just quirky",
+    "mystery anime where the clues are actually solvable",
+    "short series I can finish in one weekend"
+  ]
+}

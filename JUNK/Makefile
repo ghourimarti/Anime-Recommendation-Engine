@@ -1,8 +1,6 @@
 .PHONY: help sync test lint format typecheck check clean
 .PHONY: ingest retrieve eval eval-gate eval-refusal recommend dev-api dev-web dev lf-models token
 .PHONY: db-up db-migrate db-down db-shell
-.PHONY: venue-status venue-up-vllm venue-up-sglang venue-bench venue-compare venue-down
-.PHONY: base-images-refresh base-images-check
 .PHONY: db app obs up down upv downv ps logs urls dev
 .PHONY: obs-up obs-down obs-logs worker sqs-init
 .PHONY: eval-compare eval-promote
@@ -123,18 +121,6 @@ help:
 	@echo "  make backup-dump | backup-restore DUMP=path | backup-drill"
 	@echo "  make rtbf USER=<clerk-user-id> [DRY=0]   RTBF operator path (default dry-run)"
 	@echo "  make deploy-stage1-smoke | deploy-stage1"
-	@echo ""
-	@echo "── GPU venue (self-hosted LLM; ONE engine at a time — 12 GB card) ────"
-	@echo "  make venue-status    GPU free VRAM + running venue containers"
-	@echo "  make venue-up-vllm   start vLLM on :$(VENUE_PORT) (Qwen2.5-7B-AWQ)"
-	@echo "  make venue-up-sglang start SGLang on :$(VENUE_PORT) (same weights)"
-	@echo "  make venue-bench     benchmark running venue (TTFT/TPOT/tok-s)"
-	@echo "  make venue-compare   head-to-head vLLM vs SGLang (parity-checked)"
-	@echo "  make venue-down      stop venue containers + free VRAM"
-	@echo ""
-	@echo "── Release packaging (build once, deploy many) ───────────────────────"
-	@echo "  make base-images-check    fail if base-images.lock is stale (CI gate)"
-	@echo "  make base-images-refresh  re-resolve base tags -> digests; commit alone"
 
 # ╔══════════════════════════════════════════════╗
 # ║  Workspace targets                           ║
@@ -539,48 +525,3 @@ deploy-stage1:
 	@echo
 	@echo "Stage 1 acceptance complete. See docs/deploy/stage1-local-docker.md §4"
 	@echo "for the gate-criteria checklist; sign off by adding a row to §7."
-
-# ── GPU venue (S19/S20 — self-hosted LLM serving) ─────────────────────────
-# The 12 GB card holds exactly ONE 7B model, so vLLM and SGLang are mutually
-# exclusive: always `venue-down` before starting the other engine. Both are
-# measured by the same harness against the same prompt fixture so the engine
-# is the only variable.
-VENUE_PORT ?= 8001
-VENUE_URL  ?= http://localhost:$(VENUE_PORT)/v1
-VENUE_RUNS ?= 20
-
-venue-status:
-	@nvidia-smi --query-gpu=name,memory.total,memory.free --format=csv 2>/dev/null || echo "nvidia-smi unavailable"
-	@echo
-	@echo "venue containers:"
-	@docker ps -a --filter "name=anime-vllm" --filter "name=anime-sglang" \
-	    --format "  {{.Names}}  {{.Status}}" 2>/dev/null || true
-	@docker ps -a --filter "name=anime-vllm" --filter "name=anime-sglang" -q 2>/dev/null | grep -q . \
-	    || echo "  (none)"
-
-venue-up-vllm:
-	bash scripts/venue/up_vllm.sh --port $(VENUE_PORT)
-
-venue-up-sglang:
-	bash scripts/venue/up_sglang.sh --port $(VENUE_PORT)
-
-venue-bench:
-	uv run python scripts/bench_venue.py --engine $(or $(ENGINE),vllm) \
-	    --url $(VENUE_URL) --runs $(VENUE_RUNS)
-
-venue-down:
-	bash scripts/venue/down_venue.sh $(TARGET)
-
-venue-compare:
-	uv run python scripts/venue/compare.py
-
-# ── Release packaging (P6) ────────────────────────────────────────────────
-# base-images.lock is the authoritative pin for what we build ON. A bump is a
-# supply-chain event: new upstream packages, new CVEs, a new Trivy result. It
-# gets its own command, its own review and its own commit — never a line buried
-# in a feature PR.
-base-images-check:
-	bash scripts/release/refresh_base_images.sh --check
-
-base-images-refresh:
-	bash scripts/release/refresh_base_images.sh

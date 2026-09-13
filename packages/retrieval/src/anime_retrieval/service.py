@@ -20,9 +20,10 @@ from typing import Protocol
 
 from anime_core.fallback import DEGRADED_NOTICE, NO_MATCH_NOTICE, popular_fallback
 from anime_core.llm_client import LLMClient
-from anime_core.observability.metrics import record_refusal
+from anime_core.observability.metrics import record_refusal, record_retrieval_confidence
 from anime_core.resilience import RetrievalUnavailableError
 from anime_core.schemas import RecommendationResult, Recommendations
+from anime_core.venue import RETRIEVAL_CONFIDENCE
 
 from anime_retrieval.types import Candidate
 
@@ -37,6 +38,33 @@ MAX_CANDIDATE_CHARS = 800
 def _llm_enabled() -> bool:
     """Cost kill switch: LLM_ENABLED=false short-circuits generation."""
     return os.environ.get("LLM_ENABLED", "true").strip().lower() != "false"
+
+
+def _top_rerank_confidence(candidates: list[Candidate]) -> float | None:
+    """Retrieval confidence for venue routing (D4b): the first non-None rerank score.
+
+    THIS DEFINITION IS LOAD-BEARING. The routing threshold (1.0) was derived by
+    scripts/venue/measure_confidence.py, which took exactly this quantity — the
+    first candidate in the returned order that carries a rerank score. Computing
+    anything else here (max score, mean of top-3, post-MMR position) would
+    silently invalidate the threshold, because it would be a different
+    distribution from the one that was measured.
+
+    Returns None when the reranker did not run. That is a real and routine case,
+    not a defensive nicety: RERANK_TIMEOUT is 2.0s and the cross-encoder lazily
+    loads its weights, so the pipeline degrades to hybrid order (rerank_score
+    None on every candidate) after a cold start. should_use_venue() treats None
+    as "no confidence" and routes to the hosted chain.
+    """
+    for candidate in candidates:
+        if candidate.rerank_score is not None:
+            # Recorded here rather than at the call sites so both recommend() and
+            # astream() are covered by construction. Only emitted when a score
+            # exists - a reranker timeout has nothing meaningful to record, and a
+            # sentinel would corrupt the distribution we compare against.
+            record_retrieval_confidence(candidate.rerank_score)
+            return candidate.rerank_score
+    return None
 
 
 class Retriever(Protocol):
@@ -125,6 +153,15 @@ class RecommendationService:
         if not candidates:
             return popular_fallback(NO_MATCH_NOTICE)
 
+        # Publish retrieval confidence for venue routing (D4b). Set unconditionally,
+        # even when routing is disabled: the LLMClient protocol is
+        # recommend(*, query, context), so there is no parameter to pass this
+        # through, and a ContextVar is the same vehicle the cost meter already uses
+        # for the mirror-image problem. Task-scoped under asyncio, so concurrent
+        # requests never read each other's value. Nothing consumes it while the
+        # flag is off.
+        RETRIEVAL_CONFIDENCE.set(_top_rerank_confidence(candidates))
+
         context = build_context(candidates)
 
         # Generation — TieredLLMClient handles Groq→OpenAI internally; if every tier
@@ -172,6 +209,10 @@ class RecommendationService:
         if not candidates:
             yield NO_MATCH_NOTICE
             return
+        # Same confidence publication as recommend() — both entry points must set
+        # it, or streaming requests would route on whatever value a previous
+        # request happened to leave in the ContextVar's default.
+        RETRIEVAL_CONFIDENCE.set(_top_rerank_confidence(candidates))
         context = build_context(candidates)
         # Graceful degradation on the streaming path — mirror the
         # structured recommend() guard. Without this, an LLM failure on BOTH
