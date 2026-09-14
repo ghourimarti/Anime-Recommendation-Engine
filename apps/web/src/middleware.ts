@@ -1,5 +1,7 @@
 import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 
+import { clerkPublishableKey, configuredSiteUrl } from "@/lib/runtime-config";
+
 // Public routes (UI redesign, route option (c) — conditional root):
 //   - auth pages (else redirect loop)
 //   - "/" — signed-out visitors see the marketing landing; the page component
@@ -35,13 +37,16 @@ export default clerkMiddleware(async (auth, req) => {
     // req.url reports that internal address instead of the browser-facing
     // origin. Rebuild the return URL against the configured public origin so
     // Clerk bounces the user back to a reachable address after sign-in.
-    const publicOrigin = process.env.NEXT_PUBLIC_SITE_URL;
+    const publicOrigin = configuredSiteUrl();
     const returnBackUrl = publicOrigin
       ? new URL(req.nextUrl.pathname + req.nextUrl.search, publicOrigin).toString()
       : req.url;
     return redirectToSignIn({ returnBackUrl });
   }
-});
+},
+// Options are computed per request, so the publishable key comes from the container
+// environment rather than being inlined at build (Phase 6, R2).
+() => ({ publishableKey: clerkPublishableKey() }));
 
 export const config = {
   matcher: [

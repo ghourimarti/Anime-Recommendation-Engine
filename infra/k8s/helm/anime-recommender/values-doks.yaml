@@ -1,0 +1,40 @@
+# DigitalOcean Kubernetes overlay (Phase 8). Layer as:
+#
+#   helm template anime . -f values.yaml -f values-doks.yaml -f values-<env>.yaml
+#
+# DOKS: ingress-nginx, Cilium CNI (NetworkPolicy IS enforced), no Secrets
+# Manager, no IRSA, no SQS. Pulls the signed artifact from ghcr.io.
+#
+# Two decisions are deliberately left OPEN here, and each is disabled rather
+# than guessed so this file renders and says so plainly:
+#   P8.6  secret backend (Sealed Secrets / SOPS / Vault) → externalSecrets off
+#   P8.x  how workers reach SQS without IRSA               → keda off
+
+image:
+  # Explicit even though it matches the base: this is the vendor-neutral source
+  # of truth. ghcr packages default to PRIVATE — make the package public, or add
+  # an imagePullSecret (P8.3).
+  registry: ghcr.io/ghourimarti
+
+externalSecrets:
+  enabled: false # PHASE 8 DECISION (P8.6): no AWS Secrets Manager on DigitalOcean
+
+rollout:
+  enabled: true # requires installing the Argo Rollouts controller on DOKS (P8)
+
+keda:
+  # PHASE 8 DECISION: SQS is an AWS service. From DOKS, workers either reach real
+  # SQS cross-cloud (static credentials via a KEDA TriggerAuthentication, since
+  # IRSA does not exist here) or the queue backend changes. Until decided,
+  # workers run at a fixed floor — and note the workers themselves still need
+  # SQS credentials at runtime; disabling KEDA does not remove that dependency.
+  enabled: false
+
+ingress:
+  className: nginx
+  annotations: {}
+
+networkPolicy:
+  ingressFrom:
+    namespaces: [ingress-nginx]
+    cidrs: []

@@ -1,14 +1,19 @@
 {{- if .Values.ingress.enabled }}
-# Ingress: web at /, api at /v1/* (the BFF also proxies, but the
-# api path is exposed for direct API clients). TLS terminated at the ALB via ACM.
+# Ingress: web at /, api at /v1/* (the BFF also proxies, but the api path is
+# exposed for direct API clients). Controller-specific behaviour — TLS, scheme,
+# target type — comes entirely from className + annotations, so the same
+# template serves ALB (values-aws), ingress-nginx (values-doks), and is switched
+# off on kind (values-local uses port-forward).
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: {{ include "anime.name" . }}
   namespace: {{ .Values.namespace }}
   labels: {{- include "anime.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
   annotations:
-    {{- toYaml .Values.ingress.annotations | nindent 4 }}
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 spec:
   ingressClassName: {{ .Values.ingress.className }}
   rules:

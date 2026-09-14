@@ -6,6 +6,7 @@ import { Toaster } from "sonner";
 import { MotionProvider } from "@/components/motion-provider";
 import { SiteFooter } from "@/components/shell/site-footer";
 import { SiteHeader } from "@/components/shell/site-header";
+import { clerkPublishableKey, siteUrl } from "@/lib/runtime-config";
 import "./globals.css";
 
 // next/font self-hosts + preloads, exposing CSS variables consumed by the
@@ -19,19 +20,25 @@ const display = Instrument_Serif({
 const sans = Inter({ subsets: ["latin"], variable: "--font-sans", display: "swap" });
 const mono = JetBrains_Mono({ subsets: ["latin"], variable: "--font-mono", display: "swap" });
 
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000";
 const TITLE = "ANIMA — Find your next anime";
 const DESCRIPTION = "Tell us the mood. Get three grounded picks, with the reasoning.";
 
-export const metadata: Metadata = {
-  metadataBase: new URL(SITE_URL),
-  title: TITLE,
-  description: DESCRIPTION,
-  applicationName: "ANIMA",
-  // opengraph-image.tsx + icon.svg are auto-detected by the App Router.
-  openGraph: { title: TITLE, description: DESCRIPTION, type: "website", siteName: "ANIMA" },
-  twitter: { card: "summary_large_image", title: TITLE, description: DESCRIPTION },
-};
+// Render per request, not at build: the site URL and the Clerk publishable key
+// come from the container environment (lib/runtime-config.ts), so ONE image
+// serves every environment. A prerendered page would freeze what the build saw.
+export const dynamic = "force-dynamic";
+
+export async function generateMetadata(): Promise<Metadata> {
+  return {
+    metadataBase: new URL(siteUrl()),
+    title: TITLE,
+    description: DESCRIPTION,
+    applicationName: "ANIMA",
+    // opengraph-image.tsx + icon.svg are auto-detected by the App Router.
+    openGraph: { title: TITLE, description: DESCRIPTION, type: "website", siteName: "ANIMA" },
+    twitter: { card: "summary_large_image", title: TITLE, description: DESCRIPTION },
+  };
+}
 
 export default function RootLayout({
   children,
@@ -40,7 +47,7 @@ export default function RootLayout({
   // root layout (not inside a Client Component) so server helpers like auth()
   // work everywhere downstream. `dark` is forced — Cinematic Noir is dark-only.
   return (
-    <ClerkProvider>
+    <ClerkProvider publishableKey={clerkPublishableKey()}>
       <html
         lang="en"
         suppressHydrationWarning

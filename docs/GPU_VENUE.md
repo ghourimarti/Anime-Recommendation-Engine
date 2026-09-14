@@ -56,6 +56,17 @@ explicitly: `python3 -m sglang.launch_server`.
 | GPU memory budget | `--gpu-memory-utilization` | `--mem-fraction-static` |
 | context window | `--max-model-len` | `--context-length` |
 
+> **Correction (2026-09-14): the memory row maps flag names, not equal budgets.**
+> SGLang's `--mem-fraction-static` is a share of the card's **total** VRAM and
+> sets its KV cache; it ignores memory already in use, and this card also drives
+> the Windows desktop. Running both engines at 0.90 was therefore not equal
+> memory, and the S20 results below stand as measured under that condition.
+> Measured SGLang KV capacity on this card: 0.50 → 1,618 tokens (prompts over
+> 1,612 tokens rejected), 0.55 → 11,881, 0.90 → 83,721 with 0.37 GB left free.
+> SGLang now starts at 0.70, and both engines at context 8,192 (the app's
+> 3,000 + 1,200-token budget did not fit 4,096). Slow SGLang cold starts on this
+> host (363–1,118 s) were **not** caused by memory: 1,118 s was with 4.5 GB free.
+
 ---
 
 ## 3. Methodology
@@ -72,7 +83,7 @@ comparison.
 | Generation | `max_tokens=256`, `temperature=0.0` (deterministic) |
 | Runs | 20 measured, 2 warm-ups discarded |
 | Concurrency | single-stream (latency, not throughput ceiling) |
-| Memory budget | 0.90 both engines · context 4096 both engines |
+| Memory budget | 0.90 both engines (flag values, **not** equal budgets — see the correction in §2) · context 4096 both engines |
 | Prefix caching | **each engine's default** (SGLang RadixAttention on, vLLM APC on) |
 
 Prefix caching is left at defaults deliberately. Disabling one engine's headline
@@ -240,14 +251,16 @@ make venue-down                          # stop, free VRAM
 
 ```
 host quiet (unrelated container stacks stopped)
-memory budget 0.90, context length 4096
+vLLM --gpu-memory-utilization 0.90 / SGLang --mem-fraction-static 0.70, context length 8192 (since 2026-09-14; S19/S20 ran at 4096)
 prompt fixture v1, max_tokens 256, temperature 0.0
 20 measured runs, 2 warm-ups discarded, single-stream
 prefix caching at each engine's default
 ```
 
-Each result file records these in metadata, so `compare.py` verifies parity
-rather than assuming it — and voids the comparison if anything drifted.
+`compare.py` voids a comparison when any of the six conditions each result file
+records differ: model, prompt fixture version, max_tokens, temperature, measured
+runs and warm-up runs. It does **not** see memory flags, context length, prefix
+caching or how busy the host is — the start scripts and the operator hold those.
 
 Raw per-run results: `Documents/docs/venue-bench/` (gitignored — machine-specific).
 

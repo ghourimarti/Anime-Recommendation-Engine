@@ -1,3 +1,4 @@
+{{- if .Values.rollout.enabled }}
 # Argo Rollouts AnalysisTemplate: the automated canary gate. Queries Prometheus
 # over the canary window; if success-rate drops or latency blows out, the
 # Rollout aborts and rolls back to stable.
@@ -60,3 +61,4 @@ spec:
               service_name="{{ .Values.api.canary.analysis.serviceName }}",
               route="/v1/recommend"
             }[2m])) by (le))
+{{- end }}

@@ -1,0 +1,53 @@
+# AWS / EKS overlay — the VENDOR dimension. Layer as:
+#
+#   helm template anime . -f values.yaml -f values-aws.yaml -f values-<env>.yaml
+#
+# Only settings that exist because the cluster is EKS belong here. Environment
+# settings (replicas, hostnames, prefixes, IRSA ARNs per env) stay in
+# values-<env>.yaml.
+#
+# This file is the old base's AWS content, relocated verbatim — so the AWS path
+# renders the same as before except for the intended fixes (image tag fallback,
+# ALB-compatible NetworkPolicy). Proven by a characterization diff in P6.
+
+image:
+  # ── PHASE 9 BLOCKERS (recorded, deliberately not fixed here) ────────────────
+  # 1. G5=C: cd.yml builds and pushes to ECR on its OWN, independently of the
+  #    signed ghcr.io artifact. Two builds, two digests, same tag — so EKS would
+  #    run different bytes from kind/DOKS and P9.5's "same digests" is false.
+  # 2. cd.yml pushes repositories named `anime-api` (flat); this chart's
+  #    repositories are `anime-recommender/api`. Today this path points at a
+  #    repository cd.yml never pushes to.
+  # Resolution for both: point EKS at the signed ghcr digest, or mirror that
+  # exact digest into ECR. ECR is kept here to preserve current AWS behaviour.
+  registry: "123456789012.dkr.ecr.us-east-1.amazonaws.com"
+
+# ESO syncs AWS Secrets Manager → the anime-app-secrets K8s Secret.
+externalSecrets:
+  enabled: true
+  secretStoreRef:
+    name: aws-secretsmanager
+    kind: ClusterSecretStore
+
+keda:
+  enabled: true
+  triggerMetadata:
+    identityOwner: workload # KEDA reads queue depth via the worker SA's IRSA role
+sqsQueueUrlBase: "https://sqs.us-east-1.amazonaws.com/123456789012"
+
+# AWS Load Balancer Controller. TLS via ACM annotations, set per env.
+ingress:
+  className: alb
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+
+# ALB in IP-target mode sends traffic from its ENIs inside the VPC, not from any
+# pod — so the base's ingress-nginx namespace rule can never match it. With VPC
+# CNI network-policy enforcement ON that rule dropped ALB traffic; with it OFF
+# (the EKS default) the policy was a silent no-op. Admit the VPC CIDR instead.
+networkPolicy:
+  ingressFrom:
+    namespaces: []
+    cidrs:
+      - 10.0.0.0/16 # = terraform output `vpc_cidr` (infra/terraform/envs/*/main.tf)

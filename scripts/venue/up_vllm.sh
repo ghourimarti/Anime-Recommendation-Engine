@@ -17,9 +17,12 @@
 # Weights come from the `vllm-hf-cache` Docker volume (5.2 GB, verified
 # complete in S19.5c). Nothing is downloaded at startup.
 #
+# Host port 1021 (SGLang uses 1020); inside the container vLLM listens on 8000.
+#
 # Usage:
 #   bash scripts/venue/up_vllm.sh
 #   bash scripts/venue/up_vllm.sh --gpu-util 0.80 --max-len 2048
+#   bash scripts/venue/up_vllm.sh --wait 600    # readiness wait; default 300 s
 #   bash scripts/venue/up_vllm.sh --help
 #
 # Exit codes:
@@ -33,9 +36,9 @@ CONTAINER=anime-vllm
 IMAGE=vllm/vllm-openai:latest
 VOLUME=vllm-hf-cache
 MODEL=Qwen/Qwen2.5-7B-Instruct-AWQ
-PORT=8001
+PORT=1021
 GPU_UTIL=0.90
-MAX_LEN=4096
+MAX_LEN=8192
 WAIT_SECS=300
 
 while [[ $# -gt 0 ]]; do
@@ -43,10 +46,12 @@ while [[ $# -gt 0 ]]; do
         --gpu-util) GPU_UTIL="$2"; shift 2 ;;
         --max-len)  MAX_LEN="$2";  shift 2 ;;
         --port)     PORT="$2";     shift 2 ;;
+        --wait)     WAIT_SECS="$2"; shift 2 ;;
         -h|--help)  sed -n '2,/^$/p' "$0" | sed 's/^# \?//'; exit 0 ;;
         *) echo "unknown arg: $1" >&2; exit 2 ;;
     esac
 done
+[[ "$WAIT_SECS" =~ ^[0-9]+$ ]] || { echo "--wait needs whole seconds, got: $WAIT_SECS" >&2; exit 2; }
 
 cd "$(dirname "$0")/../.."
 
@@ -90,7 +95,7 @@ fi
 [[ -n "$HF_TOKEN" ]] && echo "  OK    HF token present" || echo "  INFO  no HF token (fine — model is public)"
 
 # ─── Compose network attach ──────────────────────────────────────────────────
-# A containerised API cannot reach the venue on localhost:8001 — inside that
+# A containerised API cannot reach the venue on localhost:${PORT} — inside that
 # container `localhost` IS the container. This is the same class of bug the
 # compose file already guards against for Langfuse ("override BOTH host vars so
 # env_file localhost URLs don't leak in").
@@ -110,7 +115,7 @@ else
     cat >&2 <<EOF
   WARN  compose network '$COMPOSE_NET' not found — starting on the default
         bridge. A HOST-run API (make dev-api) reaches the venue fine on
-        localhost. A CONTAINERISED API (make app) will NOT, and will silently
+        localhost. A CONTAINERISED API (make up-app) will NOT, and will silently
         fall through to the hosted chain. Start the app tier first, or run the
         API on the host.
 EOF
@@ -121,8 +126,15 @@ fi
 if docker ps --filter "name=^${CONTAINER}$" --format '{{.Names}}' | grep -q .; then
     echo
     echo "  Container '${CONTAINER}' is already running."
+    # Started before the app network existed (e.g. `make venue-up-vllm`, then
+    # `make up-vllm`), it sits on the default bridge: "already running" is true and
+    # the containerised api still silently falls back to the hosted LLM. Attach it.
+    if [[ ${#NET_ARGS[@]} -gt 0 ]] && ! docker inspect -f "{{if index .NetworkSettings.Networks \"$COMPOSE_NET\"}}yes{{end}}" "$CONTAINER" | grep -q yes; then
+        docker network connect --alias anime-venue "$COMPOSE_NET" "$CONTAINER"
+        echo "  OK    attached the running container to $COMPOSE_NET as 'anime-venue'"
+    fi
     echo "  Endpoint: http://localhost:${PORT}/v1"
-    echo "  To restart: bash scripts/venue/down_vllm.sh && bash $0"
+    echo "  To restart: make venue-down-vllm venue-up-vllm"
     exit 0
 fi
 docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
@@ -150,32 +162,22 @@ docker run -d \
     --max-model-len "$MAX_LEN" \
     >/dev/null
 
-echo "  container started; waiting up to ${WAIT_SECS}s for /v1/models…"
+echo "  container started; watching startup (up to ${WAIT_SECS}s)…"
 
-# ─── Wait for readiness ───────────────────────────────────────────────
-for ((i = 0; i < WAIT_SECS; i += 5)); do
-    if curl -sf "http://localhost:${PORT}/v1/models" >/dev/null 2>&1; then
-        echo
-        echo "─── ready ──────────────────────────────────────────────────────"
-        echo "  endpoint: http://localhost:${PORT}/v1"
-        curl -s "http://localhost:${PORT}/v1/models" 2>/dev/null | head -c 300
-        echo
-        echo
-        echo "  next: make venue-bench"
-        exit 0
-    fi
-    # Fail fast if the container died rather than burning the full timeout.
-    if ! docker ps --filter "name=^${CONTAINER}$" --format '{{.Names}}' | grep -q .; then
-        echo >&2
-        echo "FAIL  container exited during startup. Last 40 log lines:" >&2
-        docker logs --tail 40 "$CONTAINER" 2>&1 >&2 || true
-        exit 1
-    fi
-    sleep 5
-    printf '.'
-done
-
-echo >&2
-echo "FAIL  timed out after ${WAIT_SECS}s. Last 40 log lines:" >&2
-docker logs --tail 40 "$CONTAINER" 2>&1 >&2 || true
+# ─── Wait for readiness, showing what the engine is doing ─────────────
+# Phases come from the engine's own log (weights, KV cache, CUDA graphs...), so a
+# slow start is visibly progressing instead of a row of dots. Fails fast on a
+# dead container or out-of-memory; warns when the log goes quiet (L.11).
+# shellcheck source=scripts/venue/_progress.sh
+source "scripts/venue/_progress.sh"
+if watch_startup vllm "$CONTAINER" "$PORT" "$WAIT_SECS"; then
+    echo
+    echo "─── ready ──────────────────────────────────────────────────────"
+    echo "  endpoint: http://localhost:${PORT}/v1"
+    curl -s "http://localhost:${PORT}/v1/models" 2>/dev/null | head -c 300
+    echo
+    echo
+    echo "  next: make venue-bench"
+    exit 0
+fi
 exit 1

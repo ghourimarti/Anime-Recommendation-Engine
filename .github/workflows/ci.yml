@@ -157,9 +157,7 @@ jobs:
           load: true
           cache-from: type=gha,scope=${{ matrix.name }}
           cache-to: type=gha,mode=max,scope=${{ matrix.name }}
-          build-args: |
-            NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_ZXhhbXBsZS5jbGVyay5hY2NvdW50cy5kZXYk
-            NEXT_PUBLIC_SITE_URL=http://localhost:1006
+          # No build args: the web image reads its Clerk key and site URL at runtime (R2).
 
       # Fail on HIGH/CRITICAL only. Wiring MEDIUM into a blocking gate trains people
       # to bypass the gate, which is worse than not having one.
@@ -172,12 +170,40 @@ jobs:
           severity: HIGH,CRITICAL
           ignore-unfixed: true
 
+  chart:
+    name: chart (render-verify, every vendor x env)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.1.4
+
+      # Pinned and checksum-verified: an unpinned validator makes the gate itself drift.
+      - name: Install kubeconform
+        run: |
+          set -euo pipefail
+          curl -sSfLo /tmp/kubeconform.tgz \
+            https://github.com/yannh/kubeconform/releases/download/v0.7.0/kubeconform-linux-amd64.tar.gz
+          echo "c31518ddd122663b3f3aa874cfe8178cb0988de944f29c74a0b9260920d115d3  /tmp/kubeconform.tgz" | sha256sum -c -
+          mkdir -p "$HOME/.local/bin"
+          tar -xzf /tmp/kubeconform.tgz -C "$HOME/.local/bin" kubeconform
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # Renders base x {local,doks,aws} x {none,dev,staging,prod}, validates against pinned
+      # Kubernetes + CRD schemas, enforces the kind no-CRD contract, and proves each check
+      # can fail with negative controls (scripts/release/render_verify.sh).
+      - name: Render-verify
+        run: bash scripts/release/render_verify.sh
+
   ci-ok:
     # One required check to protect the branch with, so adding a job later doesn't
     # mean re-editing branch protection (and forgetting to).
     name: CI OK
     if: always()
-    needs: [python, web, audit, images]
+    needs: [python, web, audit, images, chart]
     runs-on: ubuntu-latest
     steps:
       - name: Fail if any job failed

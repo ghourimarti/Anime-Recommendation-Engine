@@ -1,32 +1,54 @@
-# Default values. Per-env files (values-{dev,staging,prod}.yaml) override
-# only the deltas. Secrets are NEVER here — ESO syncs them from AWS Secrets Manager.
+# Base values — VENDOR-NEUTRAL. Layered as (G3):
+#
+#   helm template anime . -f values.yaml -f values-<vendor>.yaml [-f values-<env>.yaml]
+#
+#   vendor = local | doks | aws    (what the CLUSTER can provide)
+#   env    = dev | staging | prod  (how big, which hostnames, which prefixes)
+#
+# Nothing in this file may assume a particular cloud. It used to be the AWS
+# profile under a "defaults" label — ECR registry, ALB ingress, IRSA, Secrets
+# Manager, an SQS account URL — so every non-AWS overlay would have had to UNDO
+# it. Vendor-specific settings now live only in values-<vendor>.yaml.
+# Secrets are NEVER here.
 
 namespace: anime
 
+# Registry is the ONLY vendor variable in an image ref; repository names are
+# identical everywhere. ghcr.io is the source of truth (P6.2) — the one registry
+# kind, DOKS and EKS can all pull from.
 image:
-  registry: "123456789012.dkr.ecr.us-east-1.amazonaws.com" # set per-account/env
+  registry: ghcr.io/ghourimarti
   pullPolicy: IfNotPresent
-  api: { repository: anime-recommender/api, tag: latest }
-  web: { repository: anime-recommender/web, tag: latest }
-  worker: { repository: anime-recommender/worker, tag: latest }
+  # One tag for every component; CI sets it from the git tag. Empty falls back
+  # to .Chart.AppVersion (G4: chart version == app version). Deliberately NOT
+  # "latest": it makes "which build is running?" unanswerable and rollback
+  # ambiguous. A per-component tag or digest overrides it.
+  tag: ""
+  # digest (sha256:...) wins over any tag — it is how "the same bytes in every
+  # environment" is actually expressed.
+  api: { repository: anime-recommender/api, tag: "", digest: "" }
+  web: { repository: anime-recommender/web, tag: "", digest: "" }
+  worker: { repository: anime-recommender/worker, tag: "", digest: "" }
 
 serviceAccount:
   api:
     name: anime-api
-    roleArn: "" # eks.amazonaws.com/role-arn — from Terraform output api_irsa_role_arn
+    roleArn: "" # IRSA role ARN (EKS only) — from Terraform output api_irsa_role_arn
   worker:
     name: anime-worker
-    roleArn: "" # from Terraform output worker_irsa_role_arn
+    roleArn: "" # IRSA role ARN (EKS only) — from Terraform output worker_irsa_role_arn
 
-# External Secrets Operator: sync AWS Secrets Manager → one K8s Secret pods consume.
+# External Secrets Operator. Off in the base: which secret backend exists is a
+# property of the cluster, so each vendor overlay decides. When off, workloads
+# still read a Secret named `targetName` — something else creates it.
 externalSecrets:
-  enabled: true
+  enabled: false
   secretStoreRef:
-    name: aws-secretsmanager
+    name: "" # backend-specific; required when enabled (see values-aws.yaml)
     kind: ClusterSecretStore
-  # AWS SM secret name prefix (matches the Terraform secrets module: anime-<env>/...).
+  # Remote key prefix (AWS SM secret names anime-<env>/... on EKS).
   awsPrefix: anime-dev
-  # Logical K8s Secret the workloads envFrom.
+  # The K8s Secret every workload envFroms — the vendor-neutral contract.
   targetName: anime-app-secrets
   refreshInterval: 1h
 
@@ -41,6 +63,14 @@ config:
   semanticCacheThreshold: "0.92"
   quotaFreeTierDaily: "20"
 
+# Progressive delivery. Enabled: the api is an Argo Rollouts Rollout with the
+# canary below and an automated analysis gate. Disabled: a plain Deployment.
+# Both use ONE pod template (anime.api.podTemplate), so the toggle changes the
+# delivery strategy and nothing else. The controller runs on any conformant
+# cluster — this is not an AWS dependency.
+rollout:
+  enabled: true
+
 api:
   replicas: 2
   port: 8000
@@ -48,6 +78,9 @@ api:
     requests: { cpu: 250m, memory: 512Mi }
     limits: { cpu: "1", memory: 1Gi }
   # Argo Rollouts canary steps: shift weight, pause, analyze, widen.
+  # Rendered from here. They used to be dead config — the template hardcoded an
+  # identical inline copy, so editing these changed nothing.
+  # `analysis: true` expands to the AnalysisTemplate gate.
   canary:
     steps:
       - setWeight: 5
@@ -71,6 +104,11 @@ api:
 web:
   replicas: 2
   port: 3000
+  # Runtime config (Phase 6, R2): the web image carries neither value.
+  # siteUrl = browser-facing origin; empty derives https://<ingress.host>.
+  siteUrl: ""
+  # Clerk publishable key: public by design (not a secret), set per environment.
+  clerkPublishableKey: ""
   resources:
     requests: { cpu: 100m, memory: 256Mi }
     limits: { cpu: 500m, memory: 512Mi }
@@ -80,7 +118,16 @@ web:
     maxReplicas: 10
     targetCPUUtilizationPercentage: 70
 
-# One Deployment + KEDA ScaledObject per queue (templatized).
+# KEDA event-driven autoscaling for the workers. Disabled: each worker runs at a
+# fixed floor of max(1, minReplicas) — scale-to-zero with no autoscaler would
+# mean zero forever.
+keda:
+  enabled: true
+  # Extra aws-sqs-queue trigger metadata. Authentication is backend-specific
+  # (IRSA exists only on EKS), so the base carries none.
+  triggerMetadata: {}
+
+# One Deployment (+ KEDA ScaledObject when keda.enabled) per queue.
 workers:
   feedback: { minReplicas: 1, maxReplicas: 20, queueLength: 10, activationQueueLength: 1 }
   ingestion: { minReplicas: 0, maxReplicas: 5, queueLength: 2, activationQueueLength: 1 }
@@ -89,22 +136,21 @@ workerResources:
   requests: { cpu: 50m, memory: 128Mi }
   limits: { cpu: 500m, memory: 512Mi }
 awsRegion: us-east-1
-# Base for KEDA SQS queueURL: https://sqs.<region>.amazonaws.com/<accountId>
-# Set per env. Full URL = "{base}/{config.sqsQueuePrefix}-{queue}".
-sqsQueueUrlBase: "https://sqs.us-east-1.amazonaws.com/123456789012"
+# Base for the KEDA SQS queueURL: https://sqs.<region>.amazonaws.com/<accountId>.
+# Required when keda.enabled. Full URL = "{base}/{config.sqsQueuePrefix}-{queue}".
+sqsQueueUrlBase: ""
 
 # alembic upgrade head as a pre-upgrade/pre-install hook (uses the api image).
 migrate:
   enabled: true
 
+# Controller behaviour (TLS, scheme, target type) lives entirely in className +
+# annotations, so one template serves ALB and ingress-nginx.
 ingress:
   enabled: true
-  className: alb
+  className: nginx
   host: anime.example.com
-  # ALB + ACM TLS annotations; override per env.
-  annotations:
-    alb.ingress.kubernetes.io/scheme: internet-facing
-    alb.ingress.kubernetes.io/target-type: ip
+  annotations: {}
 
 resourceQuota:
   enabled: true
@@ -114,3 +160,11 @@ resourceQuota:
 
 networkPolicy:
   enabled: true
+  # Who may reach pods from OUTSIDE the namespace (same-namespace traffic is
+  # always allowed). A property of the ingress path, so it varies by controller:
+  #   ingress-nginx    -> admit the controller's namespace
+  #   AWS ALB, IP mode -> traffic comes from ALB ENIs in the VPC, not from any pod,
+  #                       so a namespace rule never matches it: admit by CIDR
+  ingressFrom:
+    namespaces: [ingress-nginx]
+    cidrs: []

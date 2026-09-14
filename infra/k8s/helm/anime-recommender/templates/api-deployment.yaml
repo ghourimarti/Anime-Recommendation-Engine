@@ -1,0 +1,27 @@
+{{- if not .Values.rollout.enabled }}
+# api as a plain Deployment — used where the Argo Rollouts controller is not
+# installed (kind locally). A Rollout CRD applied to a cluster without the
+# controller is rejected outright ("no matches for kind Rollout"), so without
+# this fallback the api cannot run there at all.
+#
+# Same pod template as the Rollout (anime.api.podTemplate), so the two cannot
+# drift: the only difference between them is the delivery strategy, which is
+# the entire point of the toggle.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "anime.name" . }}-api
+  namespace: {{ .Values.namespace }}
+  labels: {{- include "anime.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.api.replicas }}
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      {{- include "anime.selectorLabels" . | nindent 6 }}
+      component: api
+  strategy:
+    type: RollingUpdate
+  template:
+    {{- include "anime.api.podTemplate" . | nindent 4 }}
+{{- end }}

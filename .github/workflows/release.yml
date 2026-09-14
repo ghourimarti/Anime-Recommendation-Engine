@@ -1,0 +1,405 @@
+# ─── release — build once, sign, publish (Phase 6: P6.2–P6.6) ────────────────
+#
+# One git tag vX.Y.Z produces the exact artifacts every environment deploys:
+#   images  ghcr.io/ghourimarti/anime-recommender/{api,web,worker}   source of truth (P6.2.1)
+#           docker.io/ghourimarti/anime-recommender-{api,web,worker}  public mirror, SAME digest (P6.2.2)
+#   chart   oci://ghcr.io/ghourimarti/charts/anime-recommender       version = app version (G4, P6.6)
+#   record  release/images.lock + release/values-images.yaml         Release assets + auto-PR (G2, R3)
+#
+# Per image, in order — each step gates the next:
+#   build ONCE for linux/amd64 (R5) on the digest-pinned base from base-images.lock
+#   -> Trivy: fixable HIGH/CRITICAL fail the release (same policy as ci.yml)          (P6.4)
+#   -> SBOM with syft (SPDX JSON)                                                     (P6.4)
+#   -> push THAT local image to ghcr and Docker Hub; fail if the digests differ
+#   -> cosign keyless sign both refs + attest the SBOM                                (P6.5)
+#   -> cosign verify, exactly as a consumer would (docs/RELEASE.md)
+#
+# Why the image is loaded and pushed with `docker push` instead of build-push-action
+# `push: true`: scanning a `load: true` build and pushing a second build means the
+# scanned bytes and the shipped bytes come from two builds that only usually match.
+# Loading once and pushing that exact image makes them identical by construction.
+#
+# Triggers (R1):
+#   push tag v*.*.*                              full release
+#   workflow_dispatch, publish=false (default)   dry run: build + scan + SBOM + chart checks; nothing pushed
+#   workflow_dispatch on a v*.*.* tag, publish=true   re-run a failed release
+#
+# Auth (G1=B): pushes use the GHCR_PAT / DOCKERHUB_USERNAME / DOCKERHUB_TOKEN secrets.
+# Signing stores no key: cosign trades this job's GitHub OIDC token for a short-lived
+# Fulcio certificate, and the signature is logged in Rekor.
+#
+# Third-party actions are pinned to commit SHAs (R4); the trailing comment names the tag.
+#
+# NOTE (G5=C): cd.yml also runs on every v*.*.* tag and fails at "Assume AWS role" until
+# the AWS infrastructure exists. Expected, and recorded as a Phase 9 blocker.
+
+name: release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Push, sign and publish (only honoured on a vX.Y.Z tag). false = dry run."
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false # never cancel a half-published release
+
+permissions:
+  contents: read
+
+env:
+  CHART_REPO: oci://ghcr.io/ghourimarti/charts
+  HELM_VERSION: v4.1.4 # the version render_verify.sh is validated with locally
+  KUBECONFORM_VERSION: v0.7.0
+  KUBECONFORM_SHA256: c31518ddd122663b3f3aa874cfe8178cb0988de944f29c74a0b9260920d115d3
+  TRIVY_VERSION: v0.74.0
+  SYFT_VERSION: v1.51.1
+  COSIGN_VERSION: v3.1.3
+  OIDC_ISSUER: https://token.actions.githubusercontent.com
+
+jobs:
+  meta:
+    name: version + publish decision
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write # draft GitHub Release
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      publish: ${{ steps.v.outputs.publish }}
+    steps:
+      - name: Resolve version and whether to publish
+        id: v
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          EVENT: ${{ github.event_name }}
+          PUBLISH_INPUT: ${{ inputs.publish }}
+        run: |
+          set -euo pipefail
+          if [[ "$REF_TYPE" == tag && "$REF_NAME" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            version="${BASH_REMATCH[1]}"
+            if [[ "$EVENT" == push || "$PUBLISH_INPUT" == true ]]; then publish=true; else publish=false; fi
+          else
+            # Branch runs and pre-release tags are dry runs: a version that can never
+            # collide with a real release, and nothing leaves the runner.
+            version="0.0.0-dryrun.${GITHUB_SHA::7}"
+            publish=false
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "### release $version | publish: $publish" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create the draft GitHub Release
+        if: steps.v.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
+                 --title "$TAG" \
+                 --notes "Signed images, SBOMs and Helm chart for $TAG. Verify before deploying: docs/RELEASE.md"
+
+  images:
+    name: image ${{ matrix.name }}
+    needs: meta
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write # attach the SBOM to the draft Release
+      id-token: write # cosign keyless signing
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { name: api, context: ".", dockerfile: apps/api/Dockerfile, base_arg: UV_IMAGE }
+          - { name: web, context: "apps/web", dockerfile: apps/web/Dockerfile, base_arg: NODE_IMAGE }
+          - { name: worker, context: ".", dockerfile: apps/worker/Dockerfile, base_arg: UV_IMAGE }
+    env:
+      VERSION: ${{ needs.meta.outputs.version }}
+      PUBLISH: ${{ needs.meta.outputs.publish }}
+      GHCR_REF: ghcr.io/ghourimarti/anime-recommender/${{ matrix.name }}
+      HUB_REF: docker.io/ghourimarti/anime-recommender-${{ matrix.name }} # Docker Hub has no nested paths
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Pinned base image from base-images.lock
+        run: |
+          set -euo pipefail
+          value=$(grep -E "^${{ matrix.base_arg }}=" base-images.lock | cut -d= -f2-)
+          [[ "$value" == *@sha256:* ]] || { echo "::error::${{ matrix.base_arg }} is not digest-pinned in base-images.lock"; exit 1; }
+          echo "BASE_IMAGE=$value" >> "$GITHUB_ENV"
+          echo "SHORT_SHA=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - name: Build once (loaded locally; nothing pushed yet)
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          load: true
+          push: false
+          # A plain image manifest: the digest Trivy scanned is the digest we sign.
+          provenance: false
+          sbom: false
+          build-args: ${{ matrix.base_arg }}=${{ env.BASE_IMAGE }}
+          tags: |
+            ${{ env.GHCR_REF }}:v${{ env.VERSION }}
+            ${{ env.GHCR_REF }}:sha-${{ env.SHORT_SHA }}
+            ${{ env.HUB_REF }}:v${{ env.VERSION }}
+          cache-from: type=gha,scope=release-${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=release-${{ matrix.name }}
+
+      - name: Trivy gate (fixable HIGH/CRITICAL fail the release)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.GHCR_REF }}:v${{ env.VERSION }}
+          format: table
+          exit-code: "1"
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          version: ${{ env.TRIVY_VERSION }}
+
+      - name: SBOM (syft, SPDX JSON)
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          image: ${{ env.GHCR_REF }}:v${{ env.VERSION }}
+          format: spdx-json
+          output-file: sbom-${{ matrix.name }}.spdx.json
+          syft-version: ${{ env.SYFT_VERSION }}
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Log in to ghcr.io
+        if: env.PUBLISH == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ghourimarti
+          password: ${{ secrets.GHCR_PAT }}
+
+      - name: Log in to Docker Hub
+        if: env.PUBLISH == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Push the scanned image to both registries
+        if: env.PUBLISH == 'true'
+        id: push
+        run: |
+          set -euo pipefail
+          for ref in "$GHCR_REF:v$VERSION" "$GHCR_REF:sha-$SHORT_SHA" "$HUB_REF:v$VERSION"; do
+            docker push "$ref"
+          done
+          ghcr_digest=$(docker buildx imagetools inspect "$GHCR_REF:v$VERSION" --format '{{json .Manifest}}' | jq -r .digest)
+          hub_digest=$(docker buildx imagetools inspect "$HUB_REF:v$VERSION" --format '{{json .Manifest}}' | jq -r .digest)
+          echo "ghcr: $ghcr_digest | docker hub: $hub_digest"
+          # Build once, deploy many: a mirror with different bytes is not a mirror.
+          [[ "$ghcr_digest" == "$hub_digest" ]] || { echo "::error::ghcr and Docker Hub hold different digests"; exit 1; }
+          echo "digest=$ghcr_digest" >> "$GITHUB_OUTPUT"
+
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        if: env.PUBLISH == 'true'
+        with:
+          cosign-release: ${{ env.COSIGN_VERSION }}
+
+      - name: Sign (keyless) and attest the SBOM
+        if: env.PUBLISH == 'true'
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          cosign sign --yes "$GHCR_REF@$DIGEST"
+          cosign sign --yes "$HUB_REF@$DIGEST"
+          cosign attest --yes --type spdxjson --predicate "sbom-${{ matrix.name }}.spdx.json" "$GHCR_REF@$DIGEST"
+
+      - name: Verify exactly as a consumer would
+        if: env.PUBLISH == 'true'
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+          IDENTITY: https://github.com/${{ github.workflow_ref }}
+        run: |
+          set -euo pipefail
+          for ref in "$GHCR_REF@$DIGEST" "$HUB_REF@$DIGEST"; do
+            cosign verify "$ref" --certificate-identity "$IDENTITY" --certificate-oidc-issuer "$OIDC_ISSUER" >/dev/null
+            echo "signature verified: $ref"
+          done
+          cosign verify-attestation "$GHCR_REF@$DIGEST" --type spdxjson \
+            --certificate-identity "$IDENTITY" --certificate-oidc-issuer "$OIDC_ISSUER" >/dev/null
+          echo "SBOM attestation verified: $GHCR_REF@$DIGEST"
+
+      - name: Attach the SBOM to the draft Release
+        if: env.PUBLISH == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" "sbom-${{ matrix.name }}.spdx.json" --repo "$GITHUB_REPOSITORY" --clobber
+
+  chart:
+    name: chart (render-verify, package, push)
+    needs: meta
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # attach the chart to the draft Release
+      id-token: write # cosign keyless signing
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+    env:
+      VERSION: ${{ needs.meta.outputs.version }}
+      PUBLISH: ${{ needs.meta.outputs.publish }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Install kubeconform (pinned, checksum-verified)
+        run: |
+          set -euo pipefail
+          curl -sSfLo /tmp/kubeconform.tgz \
+            "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          echo "${KUBECONFORM_SHA256}  /tmp/kubeconform.tgz" | sha256sum -c -
+          mkdir -p "$HOME/.local/bin"
+          tar -xzf /tmp/kubeconform.tgz -C "$HOME/.local/bin" kubeconform
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Render-verify every vendor x env (P6.9)
+        run: bash scripts/release/render_verify.sh
+
+      - name: Package (chart version = app version, G4)
+        run: helm package infra/k8s/helm/anime-recommender --version "$VERSION" --app-version "$VERSION" -d dist
+
+      - name: Push the chart to ghcr (OCI)
+        if: env.PUBLISH == 'true'
+        id: push
+        env:
+          GHCR_PAT: ${{ secrets.GHCR_PAT }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$GHCR_PAT" | helm registry login ghcr.io --username ghourimarti --password-stdin
+          out=$(helm push "dist/anime-recommender-$VERSION.tgz" "$CHART_REPO" 2>&1)
+          echo "$out"
+          digest=$(grep -oE 'sha256:[0-9a-f]{64}' <<<"$out" | head -n 1)
+          [[ -n "$digest" ]] || { echo "::error::helm push printed no digest"; exit 1; }
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to ghcr.io for cosign
+        if: env.PUBLISH == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ghourimarti
+          password: ${{ secrets.GHCR_PAT }}
+
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        if: env.PUBLISH == 'true'
+        with:
+          cosign-release: ${{ env.COSIGN_VERSION }}
+
+      - name: Sign and verify the chart
+        if: env.PUBLISH == 'true'
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+          IDENTITY: https://github.com/${{ github.workflow_ref }}
+        run: |
+          set -euo pipefail
+          ref="ghcr.io/ghourimarti/charts/anime-recommender@$DIGEST"
+          cosign sign --yes "$ref"
+          cosign verify "$ref" --certificate-identity "$IDENTITY" --certificate-oidc-issuer "$OIDC_ISSUER" >/dev/null
+          echo "chart signature verified: $ref"
+
+      - name: Attach the chart to the draft Release
+        if: env.PUBLISH == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" "dist/anime-recommender-$VERSION.tgz" --repo "$GITHUB_REPOSITORY" --clobber
+
+  record:
+    name: record digests + publish the release
+    needs: [meta, images, chart]
+    if: needs.meta.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # publish the Release, push the PR branch
+      pull-requests: write # open the digest PR (R3)
+    env:
+      VERSION: ${{ needs.meta.outputs.version }}
+      CHART_DIGEST: ${{ needs.chart.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Log in to ghcr.io (packages start private)
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ghourimarti
+          password: ${{ secrets.GHCR_PAT }}
+
+      - name: Write release/images.lock and release/values-images.yaml
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          digest() {
+            docker buildx imagetools inspect "ghcr.io/ghourimarti/anime-recommender/$1:v$VERSION" --format '{{json .Manifest}}' | jq -r .digest
+          }
+          api=$(digest api); web=$(digest web); worker=$(digest worker)
+          for d in "$api" "$web" "$worker" "$CHART_DIGEST"; do
+            [[ "$d" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::unexpected digest '$d'"; exit 1; }
+          done
+          cat > release/images.lock <<EOF
+          # release/images.lock - written by .github/workflows/release.yml for v${VERSION} (${GITHUB_SHA})
+          # Deploy these digests, never the tags (G2). Verify first: docs/RELEASE.md
+          VERSION=${VERSION}
+          API_IMAGE=ghcr.io/ghourimarti/anime-recommender/api@${api}
+          WEB_IMAGE=ghcr.io/ghourimarti/anime-recommender/web@${web}
+          WORKER_IMAGE=ghcr.io/ghourimarti/anime-recommender/worker@${worker}
+          CHART=${CHART_REPO}/anime-recommender:${VERSION}@${CHART_DIGEST}
+          EOF
+          cat > release/values-images.yaml <<EOF
+          # Helm values pinning release v${VERSION} by digest (G2). Layer LAST:
+          #   helm install anime ${CHART_REPO}/anime-recommender --version ${VERSION} \\
+          #     -f values-<vendor>.yaml -f values-<env>.yaml -f release/values-images.yaml
+          image:
+            tag: "${VERSION}"
+            api: { digest: "${api}" }
+            web: { digest: "${web}" }
+            worker: { digest: "${worker}" }
+          EOF
+          cat release/images.lock
+
+      - name: Attach the record and publish the Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release upload "$GITHUB_REF_NAME" release/images.lock release/values-images.yaml --repo "$GITHUB_REPOSITORY" --clobber
+          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false
+
+      - name: Open a PR recording the digests (R3)
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          base: main
+          branch: release/images-${{ github.ref_name }}
+          add-paths: |
+            release/images.lock
+            release/values-images.yaml
+          commit-message: "chore(release): record image digests for ${{ github.ref_name }}"
+          title: "chore(release): record image digests for ${{ github.ref_name }}"
+          body: |
+            Digests published and signed by the `release` workflow for `${{ github.ref_name }}`.
+
+            Deploy with `-f release/values-images.yaml` so every environment runs these exact bytes.
+            Verify signatures first: `docs/RELEASE.md`.
+          labels: release,automated

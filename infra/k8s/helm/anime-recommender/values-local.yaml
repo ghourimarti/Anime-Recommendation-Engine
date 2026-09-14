@@ -1,0 +1,36 @@
+# kind overlay — local validation, $0 (Phase 7). Layer as:
+#
+#   helm template anime . -f values.yaml -f values-local.yaml [-f values-<env>.yaml]
+#
+# kind has no cloud load balancer, no Secrets Manager, no Argo Rollouts or KEDA
+# controllers unless you install them, and does not enforce NetworkPolicy
+# (kindnet). Everything below follows from that. render_verify.sh enforces the
+# contract: a local render may emit NO Rollout, AnalysisTemplate, ScaledObject or
+# ExternalSecret — they pass schema validation and then fail on install.
+
+image:
+  registry: "" # images are `kind load`-ed onto the node; nothing to pull from
+  # Never Always: kind would try to pull from Docker Hub → ImagePullBackOff.
+  pullPolicy: IfNotPresent
+  # Note: values-<env>.yaml sets per-component tags (dev/staging), which win
+  # over this global tag. Layer local without an env file to get :local.
+  tag: local
+
+externalSecrets:
+  enabled: false # up_local_k8s.sh creates a plain Secret named anime-app-secrets
+
+rollout:
+  enabled: false # plain Deployment; canary analysis needs Prometheus + real traffic
+
+keda:
+  enabled: false # workers run at a fixed floor of max(1, minReplicas)
+
+ingress:
+  enabled: false # kubectl port-forward
+
+networkPolicy:
+  enabled: false # kindnet does not enforce it; rendering it would imply isolation that is not there
+
+web:
+  # kind has no ingress: reach web with `kubectl port-forward svc/<release>-web 3000:80`.
+  siteUrl: http://localhost:3000

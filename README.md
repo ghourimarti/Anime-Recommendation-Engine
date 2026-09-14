@@ -235,6 +235,10 @@ make check                           # ruff lint + mypy (strict) + pytest  → t
 ```bash
 make upv                             # FROM ZERO: wipe volumes → build → start all tiers
                                      #   → migrate schema → ingest corpus (embeds ~268 rows via OpenAI, ~$0.01)
+make up                              # next time (volumes kept): API-based LLM (Groq / OpenAI); stops any GPU venue
+make up-vllm                         #   or self-hosted vLLM   (stops SGLang first; ~4 min cold model load)
+make up-sglang                       #   or self-hosted SGLang (stops vLLM first)
+make llm-status                      # which LLM the RUNNING api actually uses
 make urls                            # print every UI URL + login (ports/creds from .env)
 ```
 > `upv` is the cold-boot button (`downv` → `up` → `db-migrate` → `ingest`). Expect a few minutes on a
@@ -242,18 +246,17 @@ make urls                            # print every UI URL + login (ports/creds f
 
 ### 3-1 · Bring it up tier by tier
 ```bash
-make db                              # tier 1 — data: postgres + redis + localstack
+make up-data                         # tier 1 — data: postgres + redis + localstack + redisinsight
 make db-migrate                      # alembic upgrade head
 make ingest                          # load + embed the corpus into pgvector (needs OPENAI_API_KEY)
-make app                             # tier 2 — build + start migrate + sqs-init + api + web + worker
-make obs                             # tier 3 (optional) — otel-collector + Langfuse + Prometheus/Grafana
+make up-app                          # tier 2 — build + start migrate + sqs-init + api + web + worker
+make up-obs                          # tier 3 (optional) — otel-collector + Langfuse + Prometheus/Grafana
 make urls                            # print every URL
 ```
 
 ### 3-al2 · Native hot-reload dev
 ```bash
-make db                              # data tier in Docker
-make dev-api                         # FastAPI on :1005 (uvicorn --reload)   [terminal 1]
+make dev-api                         # FastAPI on :1005 (uvicorn --reload; starts the data tier)  [terminal 1]
 make dev-web                         # Next.js on :1006                       [terminal 2]
 ```
 
@@ -294,20 +297,23 @@ files under one project; all targets read ports + secrets from `.env`.
 
 | Command | What it does |
 |---|---|
-| `make db` | **Tier 1 — data.** Postgres + Redis + LocalStack. |
-| `make app` | **Tier 2 — the app.** Builds + starts migrate + sqs-init + API + web + worker. |
-| `make obs` | **Tier 3 — observability.** OTel Collector + Langfuse + Prometheus + Grafana (~1–3 min cold). |
-| `make up` | **Everything** — data + app + obs (16 services). |
+| `make up` | **Whole app, API-based LLM** (Groq / OpenAI). Stops any GPU venue first. |
+| `make up-vllm` | **Whole app + self-hosted vLLM.** Stops SGLang first; confident queries go to the GPU. |
+| `make up-sglang` | **Whole app + self-hosted SGLang.** Stops vLLM first. |
+| `make llm-status` | Which LLM the **running** api uses — routing flag, venue, api → venue reachability. |
 | `make upv` | **FROM SCRATCH** — `downv` → `up` → migrate → ingest. The cold-boot button. |
-| `make down` | Stop + remove containers. **Keeps** volumes (your corpus + history survive). |
-| `make downv` | Down **and wipe volumes** — ⚠️ **DESTRUCTIVE**. |
-| `make ps` / `make logs` / `make urls` | Status · tail logs · print every URL + login. |
+| `make down` | Venue + obs + app + data + network. **Keeps** volumes (your corpus + history survive). |
+| `make downv` | Down **and wipe volumes** — ⚠️ **DESTRUCTIVE** (the model-weight cache is never touched). |
+| `make up-data` · `down-data` · `downv-data` | **Tier 1 — data.** Postgres + Redis + LocalStack + RedisInsight. |
+| `make up-app` · `down-app` | **Tier 2 — the app.** Builds + starts migrate + sqs-init + API + web + worker (starts data). |
+| `make up-obs` · `down-obs` · `downv-obs` | **Tier 3 — observability.** OTel + Langfuse + Prometheus + Grafana (~1–3 min cold). |
+| `make ps` / `make logs` / `make urls` | Status (incl. venue) · tail logs · print every URL + login. |
 
 ### Local dev & database
 
 | Command | What it does |
 |---|---|
-| `make dev-api` / `make dev-web` | Hot-reload API (`:1005`) / web (`:1006`) on the host (run `make db` first). |
+| `make dev-api` / `make dev-web` | Hot-reload API (`:1005`) / web (`:1006`) on the host (`dev-api` starts the data tier itself). |
 | `make worker` | Run an SQS worker locally (`WORKER_QUEUE=feedback` by default). |
 | `make sqs-init` | Create local SQS queues + DLQs in LocalStack. |
 | `make db-migrate` / `make db-shell` | `alembic upgrade head` · open `psql` in the container. |
@@ -533,10 +539,12 @@ A clean local → cloud path:
 2. **Helm** — one chart (`infra/k8s/helm/anime-recommender`): API as an **Argo Rollouts canary** with a
    Prometheus **AnalysisTemplate** (auto-rollback), web (Deployment + HPA), workers (Deployment + **KEDA
    ScaledObject** per queue), migrate as a pre-upgrade hook, **External Secrets** for AWS SM, IRSA
-   ServiceAccounts, Ingress, ResourceQuota + NetworkPolicy.
+   ServiceAccounts, Ingress, ResourceQuota + NetworkPolicy. Values layer **vendor-neutral base →
+   `values-{local,doks,aws}` → `values-{dev,staging,prod}`**, so one chart serves kind, DOKS and EKS.
    ```bash
-   helm lint infra/k8s/helm/anime-recommender -f infra/k8s/helm/anime-recommender/values-dev.yaml
-   helm template infra/k8s/helm/anime-recommender -f .../values-prod.yaml | kubeconform -ignore-missing-schemas
+   make render-verify   # 3 vendors x 4 envs · kubeconform -strict incl. CRD schemas · negative controls
+   helm template anime infra/k8s/helm/anime-recommender \
+     -f .../values.yaml -f .../values-aws.yaml -f .../values-prod.yaml   # base → vendor → env
    ```
 3. **Terraform** — modular **VPC · EKS · RDS(pgvector) · ElastiCache · S3 · SQS · ECR · IAM/IRSA ·
    Secrets/KMS · billing alarms**; S3 + DynamoDB remote-state via a `bootstrap`. `terraform validate`

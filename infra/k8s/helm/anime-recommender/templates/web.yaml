@@ -32,6 +32,11 @@ spec:
             # BFF → api over the cluster Service DNS (server-side; never the browser).
             - name: API_BASE_URL
               value: http://{{ include "anime.name" . }}-api.{{ .Values.namespace }}.svc.cluster.local
+            # Read per request by the web app (src/lib/runtime-config.ts): one image, any hostname.
+            - name: SITE_URL
+              value: {{ .Values.web.siteUrl | default (printf "https://%s" .Values.ingress.host) | quote }}
+            - name: CLERK_PUBLISHABLE_KEY
+              value: {{ .Values.web.clerkPublishableKey | quote }}
           envFrom:
             - secretRef: { name: {{ .Values.externalSecrets.targetName }} }
           livenessProbe:

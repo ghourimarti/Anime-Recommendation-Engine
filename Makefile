@@ -1,10 +1,10 @@
 .PHONY: help sync test lint format typecheck check clean
-.PHONY: ingest retrieve eval eval-gate eval-refusal recommend dev-api dev-web dev lf-models token
-.PHONY: db-up db-migrate db-down db-shell
-.PHONY: venue-status venue-up-vllm venue-up-sglang venue-bench venue-compare venue-down
-.PHONY: base-images-refresh base-images-check
-.PHONY: db app obs up down upv downv ps logs urls dev
-.PHONY: obs-up obs-down obs-logs worker sqs-init
+.PHONY: up up-vllm up-sglang down downv upv llm-status ps logs urls service_ls
+.PHONY: up-data up-app up-obs down-data down-app down-obs downv-data downv-obs net-down wait-api ps-stack logs-obs
+.PHONY: ingest retrieve eval eval-gate eval-refusal recommend dev-api dev-web web-build web-test web-check lf-models token
+.PHONY: db-up db-migrate db-down db-shell worker sqs-init
+.PHONY: venue-status venue-up-vllm venue-up-sglang venue-down-vllm venue-down-sglang venue-down venue-bench venue-compare
+.PHONY: base-images-refresh base-images-check render-verify package
 .PHONY: eval-compare eval-promote
 .PHONY: load-validate load-smoke load-baseline load-peak load-ramp load-stream
 .PHONY: audit-secrets audit-deps audit-licenses audit-all
@@ -14,30 +14,68 @@
 .PHONY: deploy-stage1-smoke deploy-stage1
 
 # ╔══════════════════════════════════════════════╗
-# ║  Layered docker stack                        ║
+# ║  Local stack — how the commands are built    ║
 # ╚══════════════════════════════════════════════╝
-#   db     = data tier         postgres + redis + localstack        (3 svc)
-#   app    = data + app tier   + sqs-init + migrate + api + web + worker
-#   obs    = observability     otel-collector + langfuse[web/worker/postgres/
-#                              redis/clickhouse/minio]              (8 svc)
-#   up     = db + app + obs     everything (16 svc)
-#   down   = stop + remove containers          (KEEPS volumes)
-#   downv  = down + wipe named volumes          (DESTRUCTIVE)
-#   upv    = from scratch: downv → up → migrate → ingest (fully working app)
+# BASE targets are the only ones that call docker compose. One tier each:
+#   up-data      postgres + redis + localstack + redisinsight   (waits until healthy)
+#   up-app       sqs-init + migrate + api + web + worker        (depends on up-data)
+#   up-obs       otel + prometheus + grafana + langfuse stack   (independent)
+#   down-<tier>  stop + remove that tier      downv-<tier>  ...and delete its volumes
+#   venue-up-vllm / venue-up-sglang           GPU venue; each stops the other first
 #
-# All three compose files declare `name: anime-recommender`, so they share ONE
-# docker project + network. The api container reaches langfuse-web/otel-collector
-# by DNS when obs is up; when obs is down, telemetry is dropped silently.
+# Every other command is BUILT from base targets, so it reads as its own steps:
+#   up          venue-down        + data + app + obs                    LLM: Groq / OpenAI
+#   up-vllm     venue-down-sglang + data + app + obs + venue-up-vllm    LLM: vLLM on the GPU
+#   up-sglang   venue-down-vllm   + data + app + obs + venue-up-sglang  LLM: SGLang on the GPU
+#   down        venue + obs + app + data + network                      (KEEPS volumes)
+#   downv       same, deleting volumes       (DESTRUCTIVE — never the model-weight cache)
+#   upv         downv + up + migrate + ingest (from scratch)
+#
+# Three rules the structure depends on:
+#  1. up-vllm does NOT reuse `up`. `up` pins VENUE_ROUTING=false, and make applies
+#     a prerequisite's own setting over its caller's — up-vllm would silently run
+#     API-only. (Checked with a scratch Makefile on GNU Make 4.4.1.)
+#  2. The venue starts AFTER the tiers. It joins the compose network, which exists
+#     only once compose has created it; started first, it lands on the default
+#     bridge and the containerised api silently falls back to the hosted LLM.
+#  3. `down` takes the venue down first. A container still attached to the network
+#     makes compose exit 0 yet leave the network behind ("Resource is still in use").
+#
+# Prerequisites run once each, left to right; .NOTPARALLEL keeps that under -j.
+.NOTPARALLEL:
+
+# All three compose files declare `name: anime-recommender`: one project, one
+# network, so the api reaches langfuse-web / otel-collector (and the venue) by DNS.
 #
 # `--env-file .env` is passed EXPLICITLY: with compose files in infra/compose/,
 # docker compose does NOT auto-load `.env` from CWD. Skipping it makes the web
 # build bake the fallback (empty Clerk key) into the client bundle.
 COMPOSE_DIR := infra/compose
-DC_ENV      := --env-file .env
-DC_DATA     := docker compose $(DC_ENV) -f $(COMPOSE_DIR)/docker-compose.data.yml
-DC_APP      := docker compose $(DC_ENV) -f $(COMPOSE_DIR)/docker-compose.data.yml -f $(COMPOSE_DIR)/docker-compose.app.yml
-DC_OBS      := docker compose $(DC_ENV) -f $(COMPOSE_DIR)/docker-compose.obs.yml
-DC_FULL     := docker compose $(DC_ENV) -f $(COMPOSE_DIR)/docker-compose.data.yml -f $(COMPOSE_DIR)/docker-compose.app.yml -f $(COMPOSE_DIR)/docker-compose.obs.yml
+COMPOSE     := docker compose --env-file .env
+DATA_FILES  := -f $(COMPOSE_DIR)/docker-compose.data.yml
+# The app tier's depends_on names data services, so compose must load both files
+# to resolve them — only the app services are started or stopped.
+APP_FILES   := $(DATA_FILES) -f $(COMPOSE_DIR)/docker-compose.app.yml
+OBS_FILES   := -f $(COMPOSE_DIR)/docker-compose.obs.yml
+ALL_FILES   := $(APP_FILES) $(OBS_FILES)
+COMPOSE_NET := anime-recommender_default
+
+# Each base target loads only its own tier's compose files, so compose reports the
+# other tiers' containers as "orphans" on every call. They are not orphans: same
+# project, started from the other files. Ignoring them silences the warning and
+# means an added `--remove-orphans` can never delete a running tier.
+export COMPOSE_IGNORE_ORPHANS := true
+
+DATA_SERVICES := postgres redis localstack redisinsight
+APP_SERVICES  := sqs-init migrate api web worker
+OBS_SERVICES  := otel-collector prometheus grafana clickhouse langfuse-postgres langfuse-redis \
+                 minio minio-create-bucket langfuse-worker langfuse-web
+
+# Which LLM the containerised api uses. The mode targets set it (up / up-vllm /
+# up-sglang); a bare `make up-app` is API-only. .env's LLM_VENUE_ROUTING_ENABLED
+# only affects a host-run api (make dev-api) — see docker-compose.app.yml.
+VENUE_ROUTING ?= false
+API_WAIT_SECS ?= 120
 
 # ─── Ports (must mirror the PORTS section in .env — make does not parse .env;
 # override per-invocation: `make dev-api API_PORT=9000`) ───────────────────
@@ -72,20 +110,27 @@ GRAFANA_ADMIN_PASSWORD      ?= admin
 help:
 	@echo "Full run-from-scratch guide: docs/run-from-scratch.md"
 	@echo ""
-	@echo "── Docker stack (tiered; ports + creds in .env) ──────────────────────"
-	@echo "  make db         data tier only     (postgres + redis + localstack)"
-	@echo "  make app        data + app tier    (+ migrate + api + web + worker)"
-	@echo "  make obs        observability      (langfuse + otel; ~1-3min cold start)"
-	@echo "  make up         EVERYTHING         (db + app + obs, 16 services)"
-	@echo "  make upv        FROM SCRATCH       (downv → up → migrate → ingest)"
-	@echo "  make down       stop + remove      (KEEPS volumes)"
-	@echo "  make downv      down + WIPE volumes (DESTRUCTIVE)"
-	@echo "  make ps|logs|urls   status | tail logs | print all URLs"
+	@echo "── Run the app - pick the LLM ────────────────────────────────────────"
+	@echo "  make up          API-based LLM (Groq / OpenAI) - stops any GPU venue first"
+	@echo "  make up-vllm     self-hosted vLLM   - stops SGLang first (~4 min cold model load)"
+	@echo "  make up-sglang   self-hosted SGLang - stops vLLM first   (~4 min cold model load)"
+	@echo "  make llm-status  which LLM the RUNNING api actually uses"
+	@echo "  make upv         FROM SCRATCH: downv -> up -> migrate -> ingest"
+	@echo "  make down        venue + obs + app + data + network   (KEEPS volumes)"
+	@echo "  make downv       down + WIPE volumes (DESTRUCTIVE; model-weight cache is kept)"
+	@echo "  make ps|logs|urls   status incl. venue | tail logs | service URLs (no credentials)"
+	@echo "  make service_ls     every service: status, URLs and local credentials (pgAdmin, MinIO, ...)"
 	@echo ""
-	@echo "── Local dev (hot reload; run 'make db' first) ───────────────────────"
-	@echo "  make dev-api    FastAPI on :$(API_PORT)  (uvicorn --reload)"
-	@echo "  make dev-web    Next.js on :$(WEB_PORT)"
-	@echo "  make worker     run an SQS worker    (WORKER_QUEUE=feedback)"
+	@echo "── One tier at a time - what the commands above are built from ───────"
+	@echo "  make up-data | down-data | downv-data   postgres + redis + localstack + redisinsight"
+	@echo "  make up-app  | down-app                 migrate + sqs-init + api + web + worker (starts data)"
+	@echo "  make up-obs  | down-obs  | downv-obs    otel + prometheus + grafana + langfuse (~1-3 min cold)"
+	@echo "  make logs-obs                           tail Langfuse web + worker logs"
+	@echo ""
+	@echo "── Local dev (hot reload) ────────────────────────────────────────────"
+	@echo "  make dev-api    FastAPI on :$(API_PORT)  (uvicorn --reload; starts the data tier)"
+	@echo "  make dev-web    Next.js on :$(WEB_PORT)  (needs an api: make up-app or make dev-api)"
+	@echo "  make worker     run an SQS worker    (WORKER_QUEUE=feedback; starts the data tier)"
 	@echo "  make sqs-init   create local SQS queues + DLQs in LocalStack"
 	@echo ""
 	@echo "── Database ──────────────────────────────────────────────────────────"
@@ -94,10 +139,6 @@ help:
 	@echo "  make db-down    stop the postgres container"
 	@echo "  make db-shell   open psql in the running container"
 	@echo ""
-	@echo "── Observability ─────────────────────────────────────────────────────"
-	@echo "  make obs-down   stop the observability tier"
-	@echo "  make obs-logs   tail Langfuse web + worker logs"
-	@echo ""
 	@echo "── Workspace ─────────────────────────────────────────────────────────"
 	@echo "  make sync       uv sync (resolve workspace + dev deps)"
 	@echo "  make test       run all tests"
@@ -105,7 +146,7 @@ help:
 	@echo "  make check      lint + typecheck + test"
 	@echo "  make clean      remove caches"
 	@echo ""
-	@echo "── Domain (RAG pipeline) ─────────────────────────────────────────────"
+	@echo "── Domain (RAG pipeline; each starts the data tier it needs) ─────────"
 	@echo "  make ingest              load + embed the corpus"
 	@echo "  make retrieve QUERY=...   retrieve top-3 for a query"
 	@echo "  make recommend QUERY=...  retrieve + generate grounded recs"
@@ -119,22 +160,25 @@ help:
 	@echo ""
 	@echo "── Hardening: audits / chaos / backups / compliance / deploy ─────────"
 	@echo "  make audit-secrets | audit-deps | audit-licenses | audit-all"
-	@echo "  make chaos-llm | chaos-pg | chaos-net | chaos-restore   (needs stack up)"
+	@echo "  make chaos-llm | chaos-pg | chaos-net | chaos-restore   (chaos-* start the app tier)"
 	@echo "  make backup-dump | backup-restore DUMP=path | backup-drill"
 	@echo "  make rtbf USER=<clerk-user-id> [DRY=0]   RTBF operator path (default dry-run)"
 	@echo "  make deploy-stage1-smoke | deploy-stage1"
 	@echo ""
-	@echo "── GPU venue (self-hosted LLM; ONE engine at a time — 12 GB card) ────"
-	@echo "  make venue-status    GPU free VRAM + running venue containers"
-	@echo "  make venue-up-vllm   start vLLM on :$(VENUE_PORT) (Qwen2.5-7B-AWQ)"
-	@echo "  make venue-up-sglang start SGLang on :$(VENUE_PORT) (same weights)"
-	@echo "  make venue-bench     benchmark running venue (TTFT/TPOT/tok-s)"
-	@echo "  make venue-compare   head-to-head vLLM vs SGLang (parity-checked)"
-	@echo "  make venue-down      stop venue containers + free VRAM"
+	@echo "── GPU venue (self-hosted LLM; ONE engine at a time - 12 GB card) ────"
+	@echo "  make venue-status       GPU free VRAM + running venue containers"
+	@echo "  make venue-up-vllm      start vLLM on :$(VLLM_PORT) (stops SGLang first)"
+	@echo "  make venue-up-sglang    start SGLang on :$(SGLANG_PORT) (stops vLLM first; memory fraction $(SGLANG_MEM_FRACTION))"
+	@echo "                          both: context $(VENUE_CONTEXT_LEN) tokens, wait up to VENUE_WAIT_SECS=$(VENUE_WAIT_SECS)s to load"
+	@echo "  make venue-down-vllm | venue-down-sglang | venue-down (both)"
+	@echo "  make venue-bench [ENGINE=sglang]   benchmark (starts that engine if needed)"
+	@echo "  make venue-compare      head-to-head vLLM vs SGLang (parity-checked)"
 	@echo ""
 	@echo "── Release packaging (build once, deploy many) ───────────────────────"
 	@echo "  make base-images-check    fail if base-images.lock is stale (CI gate)"
 	@echo "  make base-images-refresh  re-resolve base tags -> digests; commit alone"
+	@echo "  make render-verify        render every vendor x env; validate incl. CRDs"
+	@echo "  make package [VERSION=x]  local bundle: 3 images on pinned bases + chart tgz in dist/"
 
 # ╔══════════════════════════════════════════════╗
 # ║  Workspace targets                           ║
@@ -163,153 +207,153 @@ clean:
 	@echo "Caches removed."
 
 # ╔══════════════════════════════════════════════╗
-# ║  Tiered docker stack                         ║
+# ║  Run the app — built from base targets       ║
 # ╚══════════════════════════════════════════════╝
-# Bring up one tier at a time, or the whole thing. See the DC_* variables and
-# the "Layered docker stack" comment at the top of this file.
+# No docker compose calls in this section: every command is a list of steps.
 
-db:            ## data tier only: postgres + redis + localstack
-	$(DC_DATA) up -d
-	@echo "Data tier up: postgres :$(POSTGRES_PORT), redis :$(REDIS_PORT), localstack :$(LOCALSTACK_PORT)."
+up: VENUE_ROUTING := false
+up: venue-down up-data up-app up-obs wait-api llm-status urls
+	@echo "  First run on this machine? make upv also migrates + ingests the corpus."
 
-app:           ## data + app tier: + migrate + sqs-init + api + web + worker
-	$(DC_APP) up --build -d
-	@echo "App tier up: api http://localhost:$(API_PORT)  |  web http://localhost:$(WEB_PORT)"
+up-vllm: VENUE_ROUTING := true
+up-vllm: venue-down-sglang up-data up-app up-obs venue-up-vllm wait-api llm-status urls
 
-obs:           ## observability tier: langfuse + otel (heavy; ~1-3min cold start)
-	$(DC_OBS) up -d
-	@echo ""
-	@echo "  Observability up — first cold start ~1-3 min (ClickHouse + Langfuse migrations)."
-	@echo "  Langfuse UI: http://localhost:$(LANGFUSE_WEB_PORT)  (first run: sign up → create org → copy pk-lf/sk-lf into .env)"
-	@echo "  OTel Collector: localhost:$(OTEL_GRPC_PORT) (gRPC) | localhost:$(OTEL_HTTP_PORT) (HTTP)"
-	@echo "  Then set OTEL_SDK_DISABLED=false in .env and restart the api (make app)."
+up-sglang: VENUE_ROUTING := true
+up-sglang: venue-down-vllm up-data up-app up-obs venue-up-sglang wait-api llm-status urls
 
-up:            ## EVERYTHING: db + app + obs (16 services), then print all URLs
-	$(DC_FULL) up --build -d
-	@echo ""
-	@echo "  Waiting for the API to report healthy (up to 60s)…"
-	@for i in $$(seq 1 30); do \
-	    if curl -sf -o /dev/null http://localhost:$(API_PORT)/health 2>/dev/null; then break; fi; \
-	    sleep 2; \
-	done
-	@echo "  Note: Langfuse cold start can take 1-3 min more (ClickHouse + migrations)."
-	@echo "  First-ever run also needs 'make db-migrate' + 'make ingest' (or use 'make upv')."
-	@$(MAKE) --no-print-directory urls
+down: venue-down down-obs down-app down-data net-down
 
-down:          ## stop + remove all containers (KEEPS named volumes)
-	$(DC_FULL) down
+downv: venue-down downv-obs down-app downv-data net-down
 
-downv:         ## down + WIPE named volumes — DESTROYS corpus, traces, Langfuse org
-	$(DC_FULL) down -v
+# From scratch: wipe → bring everything up → migrate → ingest. Ingest embeds
+# ~268 rows via OpenAI (~$0.01; needs OPENAI_API_KEY).
+upv: downv up db-migrate ingest
+	@echo "  upv complete - full stack up, schema migrated, corpus ingested."
+	@bash scripts/service_ls.sh --urls
 
-# FROM SCRATCH in one command: wipe → build volumes + all containers → wait for
-# postgres → migrate schema → ingest corpus. Leaves a fully working, queryable
-# app. Ingest embeds ~268 rows via OpenAI (~$0.01; needs OPENAI_API_KEY).
-upv:           ## from scratch: downv → up → migrate → ingest (fully working app)
-	@echo "─── upv: wiping volumes + rebuilding from scratch ──────────────"
-	$(DC_FULL) down -v
-	$(DC_FULL) up --build -d
-	@echo "─── waiting for postgres to accept connections ─────────────────"
-	@until $(DC_DATA) exec -T postgres sh -c 'pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB' >/dev/null 2>&1; do sleep 1; done
-	@echo "─── migrate schema (host alembic → localhost:$(POSTGRES_PORT)) ──"
-	$(MAKE) db-migrate
-	@echo "─── ingest corpus (embeds via OpenAI) ──────────────────────────"
-	$(MAKE) ingest
-	@echo ""
-	@echo "  upv complete — full stack up, schema migrated, corpus ingested."
-	@echo "  Web: http://localhost:$(WEB_PORT)   API: http://localhost:$(API_PORT)/health"
-	@$(MAKE) --no-print-directory urls
+ps: ps-stack venue-status
 
-ps:            ## status of every container in the stack
-	$(DC_FULL) ps
+# ╔══════════════════════════════════════════════╗
+# ║  Base targets — the only compose calls       ║
+# ╚══════════════════════════════════════════════╝
+up-data:
+	$(COMPOSE) $(DATA_FILES) up -d --wait $(DATA_SERVICES)
+	@echo "  data tier up: postgres :$(POSTGRES_PORT) | redis :$(REDIS_PORT) | localstack :$(LOCALSTACK_PORT)"
 
-logs:          ## tail logs for the whole stack (Ctrl-C to stop)
-	$(DC_FULL) logs -f --tail=100
+# VENUE_ROUTING is passed on the command line because the api container also
+# reads .env, whose value would otherwise decide for every command.
+up-app: up-data
+	VENUE_ROUTING=$(VENUE_ROUTING) $(COMPOSE) $(APP_FILES) up --build -d $(APP_SERVICES)
+	@echo "  app tier up (venue routing=$(VENUE_ROUTING)): api http://localhost:$(API_PORT) | web http://localhost:$(WEB_PORT)"
 
-urls:          ## print every service's URL + credentials (ports from .env)
-	@echo ""
-	@echo "  ========================================================================"
-	@echo "   Anime Recommender - service directory   (open the http:// links below)"
-	@echo "  ========================================================================"
-	@echo ""
-	@echo "  [ OPEN IN BROWSER ]"
-	@echo "    Web app             http://localhost:$(WEB_PORT)"
-	@echo "    API docs (Swagger)  http://localhost:$(API_PORT)/docs"
-	@echo "    API health          http://localhost:$(API_PORT)/health"
-	@echo "    Langfuse (traces)   http://localhost:$(LANGFUSE_WEB_PORT)"
-	@echo "        login:          $(LANGFUSE_INIT_USER_EMAIL) / $(LANGFUSE_INIT_USER_PASSWORD)"
-	@echo "    Grafana (metrics)   http://localhost:$(GRAFANA_PORT)"
-	@echo "        login:          $(GRAFANA_ADMIN_USER) / $(GRAFANA_ADMIN_PASSWORD)"
-	@echo "    RedisInsight        http://localhost:$(REDISINSIGHT_PORT)   (both Redis pre-added)"
-	@echo "    Prometheus          http://localhost:$(PROMETHEUS_PORT)   (Status > Targets)"
-	@echo "    MinIO console       http://localhost:$(MINIO_CONSOLE_PORT)"
-	@echo "        login:          $(MINIO_ROOT_USER) / $(MINIO_ROOT_PASSWORD)"
-	@echo ""
-	@echo "  [ DATA TIER ]  (client tools - no web UI)"
-	@echo "    Postgres (app)      localhost:$(POSTGRES_PORT)   db=anime   (psql / pgAdmin / DBeaver)"
-	@echo "    Redis (app cache)   localhost:$(REDIS_PORT)   no password   (or RedisInsight above)"
-	@echo "    LocalStack SQS/S3   http://localhost:$(LOCALSTACK_PORT)/_localstack/health"
-	@echo "        list queues:    aws --endpoint-url=http://localhost:$(LOCALSTACK_PORT) sqs list-queues"
-	@echo ""
-	@echo "  [ OBSERVABILITY TIER ]  (make obs)"
-	@echo "    OTel Collector      localhost:$(OTEL_GRPC_PORT) gRPC | http://localhost:$(OTEL_HTTP_PORT) HTTP"
-	@echo "        metrics export  http://localhost:$(OTEL_PROM_PORT)/metrics   (Prometheus scrapes this)"
-	@echo "    ClickHouse          http://localhost:$(CLICKHOUSE_HTTP_PORT)   (native: localhost:$(CLICKHOUSE_NATIVE_PORT))"
-	@echo "    Langfuse Postgres   localhost:$(LANGFUSE_POSTGRES_PORT)   db=langfuse"
-	@echo "    Langfuse Redis      localhost:$(LANGFUSE_REDIS_PORT)   password=$(LANGFUSE_REDIS_AUTH)"
-	@echo "    MinIO S3 API        http://localhost:$(MINIO_API_PORT)   (console is above)"
-	@echo ""
-	@echo "  Metrics flow: app -> OTel collector -> Prometheus -> Grafana (all local)."
-	@echo "  ========================================================================"
-	@echo ""
+up-obs:
+	$(COMPOSE) $(OBS_FILES) up -d $(OBS_SERVICES)
+	@echo "  observability up - first cold start ~1-3 min (ClickHouse + Langfuse migrations)"
+	@echo "  Langfuse http://localhost:$(LANGFUSE_WEB_PORT) | OTel localhost:$(OTEL_GRPC_PORT) gRPC / $(OTEL_HTTP_PORT) HTTP"
+	@echo "  Tracing: set OTEL_SDK_DISABLED=false in .env, then make up-app"
+
+down-app:
+	$(COMPOSE) $(APP_FILES) down $(APP_SERVICES)
+
+# The data tier cannot go down under a running app.
+down-data: down-app
+	$(COMPOSE) $(DATA_FILES) down $(DATA_SERVICES)
+
+down-obs:
+	$(COMPOSE) $(OBS_FILES) down $(OBS_SERVICES)
+
+# down -v <services> deletes only those services' volumes. The model-weight cache
+# (vllm-hf-cache) is created by the venue scripts, not compose, so it is never hit.
+downv-data: down-app
+	$(COMPOSE) $(DATA_FILES) down -v $(DATA_SERVICES)
+
+downv-obs:
+	$(COMPOSE) $(OBS_FILES) down -v $(OBS_SERVICES)
+
+# Per-tier `down` leaves the shared network; remove it once nothing is attached.
+net-down:
+	@if docker network inspect $(COMPOSE_NET) >/dev/null 2>&1; then \
+	    docker network rm $(COMPOSE_NET) >/dev/null && echo "  network $(COMPOSE_NET) removed"; \
+	fi
+
+wait-api:
+	@printf "  waiting for api /health"; \
+	for i in $$(seq 1 $$(( $(API_WAIT_SECS) / 2 ))); do \
+	    if curl -sf -o /dev/null http://localhost:$(API_PORT)/health 2>/dev/null; then echo " ok"; exit 0; fi; \
+	    printf "."; sleep 2; \
+	done; \
+	echo; echo "  FAIL  api not healthy after $(API_WAIT_SECS)s — docker logs anime-api --tail 50"; exit 1
+
+# Reads the RUNNING containers, not .env or this file — see the script header.
+llm-status:
+	@bash scripts/venue/llm_status.sh
+
+ps-stack:
+	$(COMPOSE) $(ALL_FILES) ps
+
+logs:
+	$(COMPOSE) $(ALL_FILES) logs -f --tail=100
+
+logs-obs:
+	$(COMPOSE) $(OBS_FILES) logs -f langfuse-web langfuse-worker
+
+# URLs + live status, NO credentials - printed at the end of every `make up*`.
+urls:
+	@bash scripts/service_ls.sh --urls
+
+# Every component with live status, URLs and connection details INCLUDING local
+# credentials: both Postgres DBs (pgAdmin fields), Redis, ClickHouse, MinIO,
+# Langfuse, Grafana, vLLM / SGLang. Values are read from .env at run time.
+service_ls:
+	@bash scripts/service_ls.sh
 
 # ╔══════════════════════════════════════════════╗
 # ║  Database targets                            ║
 # ╚══════════════════════════════════════════════╝
 db-up:
-	$(DC_DATA) up -d postgres
-	@echo "Waiting for postgres to be ready..."
-	@until $(DC_DATA) exec -T postgres sh -c 'pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB' >/dev/null 2>&1; do sleep 1; done
+	$(COMPOSE) $(DATA_FILES) up -d --wait postgres
 	@echo "Postgres ready on localhost:$(POSTGRES_PORT) (credentials: POSTGRES_* in .env)."
 
-db-migrate:
+db-migrate: up-data
 	uv run alembic upgrade head
 
 db-down:
-	$(DC_DATA) stop postgres
+	$(COMPOSE) $(DATA_FILES) stop postgres
 
-db-shell:
-	$(DC_DATA) exec postgres sh -c 'psql -U $$POSTGRES_USER -d $$POSTGRES_DB'
+db-shell: up-data
+	$(COMPOSE) $(DATA_FILES) exec postgres sh -c 'psql -U $$POSTGRES_USER -d $$POSTGRES_DB'
 
 # ╔══════════════════════════════════════════════╗
 # ║  Domain targets                              ║
 # ╚══════════════════════════════════════════════╝
-ingest:
+# Each starts the tier it needs first (a no-op when it is already up). CI does not
+# call make — the workflows run uv directly — so this never starts Docker in CI.
+ingest: up-data
 	uv run python -m anime_ingestion.cli --csv data/anime_with_synopsis.csv
 
-retrieve:
+retrieve: up-data
 	@test -n "$(QUERY)" || (echo "Usage: make retrieve QUERY='light hearted school anime'" && exit 1)
 	uv run python -m anime_retrieval.cli --query "$(QUERY)"
 
-eval:
+eval: up-data
 	uv run python -m anime_eval.cli $(EVAL_ARGS)
 
 # The quality gate CI runs: eval, then compare against evals/baseline.json.
 # anime_eval.compare enforces BOTH no-regression-vs-baseline AND lift-over-naive.
-eval-gate:
+eval-gate: up-data
 	uv run python -m anime_eval.cli --json $(EVAL_CANDIDATE)
 	uv run python -m anime_eval.compare --baseline $(EVAL_BASELINE) --candidate $(EVAL_CANDIDATE)
 
 # Refusal gate: does the model DECLINE what it can't answer, and still ANSWER what it
 # can? Costs one LLM call per query, so it's separate from `make eval`. Before the
 # refusal path existed, "what is the capital of France" returned three anime.
-eval-refusal:
+eval-refusal: up-data
 	uv run python -m anime_eval.refusal_cli
 
 # Project LLM_PRICING into Langfuse's model table. Langfuse computes trace cost
 # from ITS OWN table, so a model it doesn't know shows $0.00 in the UI while the
 # provider still bills. Re-run after any price change (idempotent).
-lf-models:
+lf-models: up-obs
 	uv run python scripts/langfuse_models.py
 
 # Mint a short-lived Clerk JWT for smoke/chaos probes (auth fails closed — there
@@ -317,14 +361,17 @@ lf-models:
 token:
 	@uv run python scripts/dev_token.py
 
-recommend:
+recommend: up-data
 	uv run python -m anime_retrieval.recommend_cli --query "$(QUERY)" $(RECOMMEND_ARGS)
 
 # API_PORT/WEB_PORT come from the port block at the top (1005/1006 — keep in
 # sync with .env). Override per-invocation: make dev-api API_PORT=9000
-dev-api:
+dev-api: up-data
 	uv run uvicorn anime_api.main:app --reload --port $(API_PORT)
 
+# No stack prerequisite on purpose: port $(API_PORT) is served EITHER by the
+# containerised api (up-app) OR by a host api (dev-api). Auto-starting one would
+# collide with the other, so start the api you want first.
 dev-web:
 	pnpm --dir apps/web dev -p $(WEB_PORT)
 
@@ -337,24 +384,6 @@ web-test:
 web-check:
 	pnpm --dir apps/web typecheck && pnpm --dir apps/web lint && pnpm --dir apps/web test
 
-# `dev` = backwards-compat alias for `app` (data + app tier, containerised).
-# For hot-reload host dev, use `make db` then `make dev-api` / `make dev-web`.
-dev: app
-
-# ╔══════════════════════════════════════════════╗
-# ║  Observability targets                       ║
-# ╚══════════════════════════════════════════════╝
-# The obs tier now lives in its OWN compose file (infra/compose/docker-
-# compose.obs.yml) instead of a `--profile obs`. `make obs` is the primary
-# target; these obs-up/down/logs aliases are kept for backwards-compat.
-obs-up: obs
-
-obs-down:
-	$(DC_OBS) down
-
-obs-logs:
-	$(DC_OBS) logs -f langfuse-web langfuse-worker
-
 # ╔══════════════════════════════════════════════╗
 # ║  Worker targets                              ║
 # ╚══════════════════════════════════════════════╝
@@ -362,10 +391,10 @@ WORKER_QUEUE ?= feedback
 # load_dotenv() first: anime_core.sqs reads os.environ directly (by design —
 # containers get env injected), so the host-run path must load .env itself,
 # same as the api/worker entrypoints do.
-sqs-init:
+sqs-init: up-data
 	uv run python -c "from dotenv import load_dotenv; load_dotenv(); import asyncio; from anime_core.sqs import ensure_queues; print(asyncio.run(ensure_queues()))"
 
-worker:
+worker: up-data
 	uv run python -m anime_worker --queue $(WORKER_QUEUE)
 
 # ╔══════════════════════════════════════════════╗
@@ -401,6 +430,8 @@ eval-promote:
 # All k6 targets require BASE_URL + K6_AUTH_TOKEN env vars. See
 # tests/load/README.md for installation, auth-token minting, and stack
 # bring-up. load-validate works without k6 installed (JS syntax check only).
+# No stack prerequisite, for the same reason as dev-web: the api under test may be
+# the container (up-app), a host api (dev-api), or a remote LOAD_BASE_URL.
 LOAD_BASE_URL    ?= http://localhost:$(API_PORT)
 LOAD_K6_BIN      ?= k6
 LOAD_K6_SSE_BIN  ?= ./k6-sse
@@ -468,15 +499,16 @@ audit-all:
 # ╔══════════════════════════════════════════════╗
 # ║  Chaos drills                                ║
 # ╚══════════════════════════════════════════════╝
-# Each script is paired with chaos-restore for cleanup. Restore is idempotent
-# and safe to run any time. ALL chaos scripts require the stack up (`make app`).
-chaos-llm:
+# Each script is paired with chaos-restore for cleanup. chaos-* bring the app tier
+# up themselves; chaos-restore has no prerequisite so it still runs against a
+# half-broken stack — which is its whole job. Restore is idempotent.
+chaos-llm: up-app
 	bash scripts/chaos/kill_llm.sh
 
-chaos-pg:
+chaos-pg: up-app
 	bash scripts/chaos/kill_pg.sh
 
-chaos-net:
+chaos-net: up-app
 	bash scripts/chaos/net_partition.sh
 
 chaos-restore:
@@ -485,15 +517,15 @@ chaos-restore:
 # ╔══════════════════════════════════════════════╗
 # ║  Backup drills                               ║
 # ╚══════════════════════════════════════════════╝
-backup-dump:
+backup-dump: up-data
 	bash scripts/backup/dump_local.sh
 
 # Usage: make backup-restore DUMP=backups/anime_<ts>.sql.gz
-backup-restore:
+backup-restore: up-data
 	@test -n "$(DUMP)" || (echo "Usage: make backup-restore DUMP=backups/anime_<ts>.sql.gz" && exit 1)
 	bash scripts/backup/restore_local.sh "$(DUMP)"
 
-backup-drill:
+backup-drill: up-data
 	bash scripts/backup/drill.sh
 
 # ╔══════════════════════════════════════════════╗
@@ -502,7 +534,7 @@ backup-drill:
 # Operator CLI wrapper. Default is dry-run; pass DRY=0 to actually delete.
 # See docs/hardening/rtbf-procedure.md for the full procedure.
 DRY ?= 1
-rtbf:
+rtbf: up-data
 	@test -n "$(USER)" || (echo "Usage: make rtbf USER=user_xxxxxxxx [DRY=0]" && exit 1)
 	@if [ "$(DRY)" = "0" ]; then \
 	    uv run python scripts/rtbf.py --user "$(USER)" --confirm $(if $(REASON),--reason "$(REASON)",) ; \
@@ -514,39 +546,34 @@ rtbf:
 # ║  Local Docker deploy                         ║
 # ╚══════════════════════════════════════════════╝
 # Procedure + gate criteria in docs/deploy/stage1-local-docker.md.
-deploy-stage1-smoke:
+deploy-stage1-smoke: up-app
 	bash scripts/deploy/smoke_local.sh
 
-# Full Stage 1 acceptance: cold start → migrate + ingest → smoke → drill.
-# This is the canonical "Stage 1 passed" sequence; takes ~3-5 min total.
-# Run before promoting to Stage 2 OR after any Step-13 docker-compose change.
-deploy-stage1:
-	@echo "─── Stage 1: cold start ────────────────────────────────────────"
-	docker compose down -v
-	docker compose up -d
-	@echo "Waiting up to 60s for services to report healthy…"
-	@for i in $$(seq 1 30); do \
-	    if docker compose ps --status running | grep -q api; then break; fi; sleep 2; \
-	done
-	@sleep 5
-	@echo "─── Stage 1: migrate + ingest ──────────────────────────────────"
-	$(MAKE) db-migrate
-	$(MAKE) ingest
-	@echo "─── Stage 1: bash smoke ────────────────────────────────────────"
-	$(MAKE) deploy-stage1-smoke
-	@echo "─── Stage 1: backup drill ──────────────────────────────────────"
-	$(MAKE) backup-drill
+# Full Stage 1 acceptance: cold data tier → app → migrate + ingest → smoke → drill.
+# The canonical "Stage 1 passed" sequence; ~3-5 min. API-based LLM, so the gate
+# never depends on the GPU. Run before promoting to Stage 2 OR after any compose change.
+deploy-stage1: VENUE_ROUTING := false
+deploy-stage1: venue-down downv-data up-app wait-api db-migrate ingest deploy-stage1-smoke backup-drill
 	@echo
 	@echo "Stage 1 acceptance complete. See docs/deploy/stage1-local-docker.md §4"
 	@echo "for the gate-criteria checklist; sign off by adding a row to §7."
 
 # ── GPU venue (S19/S20 — self-hosted LLM serving) ─────────────────────────
 # The 12 GB card holds exactly ONE 7B model, so vLLM and SGLang are mutually
-# exclusive: always `venue-down` before starting the other engine. Both are
+# exclusive — each venue-up target stops the other engine first. Both are
 # measured by the same harness against the same prompt fixture so the engine
-# is the only variable.
-VENUE_PORT ?= 8001
-VENUE_URL  ?= http://localhost:$(VENUE_PORT)/v1
+# is the only variable. Stopping removes containers only; images and the
+# vllm-hf-cache weights volume are never deleted.
+# Host ports, one per engine, continuing the 1002-1019 block above. Inside the app
+# network both engines listen on 8000 behind the alias anime-venue, so the
+# containerised api's URL never changes with the engine; only host-side tools
+# (venue-bench, a host-run api via LLM_VENUE_URL in .env) need the right port.
+SGLANG_PORT ?= 1020
+VLLM_PORT   ?= 1021
+ENGINE      ?= vllm
+VENUE_PORT_vllm   = $(VLLM_PORT)
+VENUE_PORT_sglang = $(SGLANG_PORT)
+VENUE_URL  ?= http://localhost:$(VENUE_PORT_$(ENGINE))/v1
 VENUE_RUNS ?= 20
 
 venue-status:
@@ -558,18 +585,48 @@ venue-status:
 	@docker ps -a --filter "name=anime-vllm" --filter "name=anime-sglang" -q 2>/dev/null | grep -q . \
 	    || echo "  (none)"
 
-venue-up-vllm:
-	bash scripts/venue/up_vllm.sh --port $(VENUE_PORT)
+# How long a venue script waits for /v1/models before failing. The scripts
+# default to 300 s. SGLang cold starts measured on this host: 363 s, 631 s and
+# 1,118 s (2026-09-13/14); 900 s failed on the last. 1800 s is
+# P5-Medical-Chatbot's ENGINE_WAIT on the same card. The cause of the slow starts
+# is still unknown — not VRAM (the 1,118 s start had 4.5 GB free) and not the
+# C: drive. Override per run: make up-sglang VENUE_WAIT_SECS=3600
+VENUE_WAIT_SECS ?= 1800
 
-venue-up-sglang:
-	bash scripts/venue/up_sglang.sh --port $(VENUE_PORT)
+# Context window for BOTH engines (vLLM --max-model-len, SGLang --context-length),
+# one variable so they cannot drift. It must cover the app's budget:
+# LLM_MAX_INPUT_TOKENS 3000 + LLM_MAX_OUTPUT_TOKENS 1200 = 4,200 tokens. At 4096
+# SGLang rejected such a request with HTTP 400, and the app silently fell back to
+# Groq / OpenAI. The S19/S20 benchmarks ran at 4096.
+VENUE_CONTEXT_LEN ?= 8192
 
-venue-bench:
-	uv run python scripts/bench_venue.py --engine $(or $(ENGINE),vllm) \
+# SGLang's --mem-fraction-static is a share of the card's TOTAL VRAM, and it sets
+# the KV cache — how many tokens SGLang can hold at once. Measured on this card
+# with Qwen2.5-7B-AWQ:
+#   0.50 → 1,618-token KV cache; prompts over 1,612 tokens rejected (app allows 3,000)
+#   0.55 → 11,881 tokens, 4.87 GB free after the pool (another container)
+#   0.90 → 83,721 tokens, 0.37 GB free — almost nothing left for the Windows desktop
+# 0.70 sits between: estimated ~42k tokens and ~3 GB free (confirm with
+# /get_server_info after a start). P5-Medical-Chatbot's 0.50 did not transfer.
+SGLANG_MEM_FRACTION ?= 0.70
+
+venue-up-vllm: venue-down-sglang
+	bash scripts/venue/up_vllm.sh --port $(VLLM_PORT) --max-len $(VENUE_CONTEXT_LEN) --wait $(VENUE_WAIT_SECS)
+
+venue-up-sglang: venue-down-vllm
+	bash scripts/venue/up_sglang.sh --port $(SGLANG_PORT) --mem-frac $(SGLANG_MEM_FRACTION) --context-len $(VENUE_CONTEXT_LEN) --wait $(VENUE_WAIT_SECS)
+
+venue-down-vllm:
+	@bash scripts/venue/down_venue.sh vllm
+
+venue-down-sglang:
+	@bash scripts/venue/down_venue.sh sglang
+
+venue-down: venue-down-vllm venue-down-sglang
+
+venue-bench: venue-up-$(ENGINE)
+	uv run python scripts/bench_venue.py --engine $(ENGINE) \
 	    --url $(VENUE_URL) --runs $(VENUE_RUNS)
-
-venue-down:
-	bash scripts/venue/down_venue.sh $(TARGET)
 
 venue-compare:
 	uv run python scripts/venue/compare.py
@@ -584,3 +641,24 @@ base-images-check:
 
 base-images-refresh:
 	bash scripts/release/refresh_base_images.sh
+
+# Render every vendor x env and validate against pinned K8s + CRD schemas (P6.9).
+# kubeconform checks SCHEMAS, not whether a cluster runs the controller, so the
+# script also enforces which CRD kinds each vendor may emit, and runs a negative
+# control proving the gate can fail.
+render-verify:
+	bash scripts/release/render_verify.sh
+
+# Local release bundle (P6.8): the same inputs CI builds from, and nothing pushed,
+# scanned or signed (that only happens in .github/workflows/release.yml). Images
+# are built on the digest-pinned bases from base-images.lock, the chart is
+# render-verified first and packaged with chart version = app version (G4).
+VERSION ?= 0.0.0-local
+package: render-verify
+	@set -a; . ./base-images.lock; set +a; \
+	docker build --build-arg UV_IMAGE="$$UV_IMAGE" -f apps/api/Dockerfile -t anime-recommender/api:$(VERSION) . && \
+	docker build --build-arg NODE_IMAGE="$$NODE_IMAGE" -f apps/web/Dockerfile -t anime-recommender/web:$(VERSION) apps/web && \
+	docker build --build-arg UV_IMAGE="$$UV_IMAGE" -f apps/worker/Dockerfile -t anime-recommender/worker:$(VERSION) .
+	@mkdir -p dist
+	helm package infra/k8s/helm/anime-recommender --version $(VERSION) --app-version $(VERSION) -d dist
+	@echo "  bundle: anime-recommender/{api,web,worker}:$(VERSION) + dist/anime-recommender-$(VERSION).tgz"

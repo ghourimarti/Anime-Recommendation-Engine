@@ -67,7 +67,9 @@ def venue_enabled() -> bool:
 
 
 def venue_url() -> str:
-    return os.environ.get("LLM_VENUE_URL", "http://localhost:8001/v1")
+    # Default = a HOST-run api talking to vLLM on its host port (SGLang is 1020).
+    # Containers never use it: compose sets http://anime-venue:8000/v1.
+    return os.environ.get("LLM_VENUE_URL", "http://localhost:1021/v1")
 
 
 def venue_model() -> str:

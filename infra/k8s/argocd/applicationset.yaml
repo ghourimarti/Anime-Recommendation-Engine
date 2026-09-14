@@ -24,7 +24,12 @@ spec:
         targetRevision: main
         path: infra/k8s/helm/anime-recommender
         helm:
+          # base → vendor → env. ArgoCD loads the chart's values.yaml implicitly;
+          # this ApplicationSet targets EKS, so the vendor layer is values-aws.yaml.
+          # Without it the vendor-neutral base describes no cloud and fails to
+          # render (sqsQueueUrlBase is required) — every Application out of sync.
           valueFiles:
+            - values-aws.yaml
             - "values-{{`{{env}}`}}.yaml"
       destination:
         server: https://kubernetes.default.svc

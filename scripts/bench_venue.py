@@ -21,7 +21,8 @@ artificially slow.
 
 Usage:
     python scripts/bench_venue.py --engine vllm
-    python scripts/bench_venue.py --engine sglang --url http://localhost:8002/v1
+    python scripts/bench_venue.py --engine sglang          # -> http://localhost:1020/v1
+    python scripts/bench_venue.py --url http://localhost:9000/v1
     python scripts/bench_venue.py --runs 30 --warmup 3
 
 Exit codes:
@@ -227,7 +228,11 @@ def main() -> int:
         description="Benchmark an OpenAI-compatible venue (TTFT/TPOT/throughput).",
     )
     parser.add_argument("--engine", default="vllm", help="label for the result file (vllm|sglang)")
-    parser.add_argument("--url", default="http://localhost:8001/v1", help="OpenAI-compatible base URL")
+    parser.add_argument(
+        "--url",
+        default=None,
+        help="OpenAI-compatible base URL (default: the engine's host port - sglang 1020, vllm 1021)",
+    )
     parser.add_argument("--model", default="Qwen/Qwen2.5-7B-Instruct-AWQ")
     parser.add_argument("--runs", type=int, default=20, help="measured runs (after warm-up)")
     parser.add_argument("--warmup", type=int, default=2, help="discarded warm-up runs")
@@ -235,6 +240,11 @@ def main() -> int:
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
     parser.add_argument("--no-write", action="store_true", help="print only, do not write JSON")
     args = parser.parse_args()
+    if args.url is None:
+        # Each engine has its own host port (Makefile SGLANG_PORT / VLLM_PORT), so a
+        # fixed default would benchmark whichever engine happens to own it.
+        port = {"sglang": 1020}.get(args.engine, 1021)
+        args.url = f"http://localhost:{port}/v1"
 
     if not PROMPTS_PATH.exists():
         print(f"prompt fixture missing: {PROMPTS_PATH}", file=sys.stderr)

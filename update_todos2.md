@@ -1,0 +1,355 @@
+# Update Todos 2 — detailed tracker (Track L, findings, gates, evidence)
+
+> **Clean phase summary lives in `update_todos.md`** (phases 0–10 + Track D, one line per item). This file keeps everything else: Track L, findings, decision gates, measurements. Split made 2026-09-14 on request.
+
+> Living tracker. Long-form plan with rationale: `Documents/docs/transformation-plan.md`
+> Decision record: `docs/DECISION_LOG.md`
+
+**Legend:** ✅ complete · 🔄 in progress · ⏸️ blocked · ⏳ pending
+**Last updated:** 2026-09-14 — **Track L complete (10/10)**: `make up` / `up-sglang` / `up-vllm` / `down` all verified live; SGLang 0.70 and vLLM 0.90 at context 8192 on ports 1020 / 1021 · Phase 6 3/12 (G6–G9=A). Gates: G1=B PAT auth · G2=B lockfile · G3=A layered values · G4=A chart=app version · G5=C cd.yml untouched
+
+---
+
+## Phase topology
+
+```
+Phase 0 ──► Phase 1 ──► ... ──► Phase 5  (development complete)
+                                    │
+                                    ▼
+                    PHASE 6 — Release Packaging
+                    "build once, deploy many"
+                                    │
+              ┌─────────────────────┼─────────────────────┐
+              ▼                     ▼                     ▼
+        PHASE 7                PHASE 8                PHASE 9
+    Local & kind            Real managed K8s          AWS EKS
+        ($0)                    (metered)          (portability)
+              └─────────────────────┼─────────────────────┘
+                                    ▼
+                           PHASE 10 — Portfolio
+```
+
+Phases 7/8/9 are parallel in dependency (each needs only Phase 6). Recommended
+execution order is still 7 → 8 → 9 (free → metered → expensive).
+
+---
+
+## PHASE 0 — Recon ✅ 3 / 3
+
+- ✅ P0.1 Read repo, map stack and data flow
+- ✅ P0.2 Baseline report — present / partial / absent layer map
+- ✅ P0.3 Package mapping → Package 1 (Production-grade RAG)
+
+## PHASE 1 — Requirements & NFRs ✅ 3 / 3
+
+- ✅ P1.1 Functional scope — multi-tenant anime-recommendation SaaS
+- ✅ P1.2 NFRs @ 100k MAU — TTFT p50 800 ms / p95 2.5 s, 50 RPS sustained / 200 peak, 99.5% SLO, <$0.005/req
+- ✅ P1.3 Out-of-scope list — 15 explicit exclusions
+
+## PHASE 2 — Decision Log ✅ 5 / 5
+
+- ✅ P2.1 Decision dependency graph
+- ✅ P2.2 22 decisions (D1 Postgres → D22 monorepo)
+- ✅ P2.3 At-a-glance summary table
+- ✅ P2.4 Revisions — D5 (`text-embedding-3-small` 1536-dim), D6 (LangChain v1 factories), D11 (SQS + EKS workers)
+- ✅ P2.5 **D4b added + D12 amended** — multi-venue serving, written during S20.8
+
+## PHASE 3 — Transformation Plan ✅ 4 / 4
+
+- ✅ P3.1 18 risk-front-loaded steps
+- ✅ P3.2 v1.1 — deployment phases split, vendor-portability principle
+- ✅ P3.3 v1.2 — S19/S20 GPU venue spikes as separate steps; S21 venue integration
+- ✅ P3.4 v1.3 — Phase 6 Release Packaging inserted; phases renumbered 7/8/9/10, made parallel
+
+---
+
+## PHASE 4 — Execution ✅ 21 / 21
+
+- ✅ **S1** Repo skeleton + workspace config [D22]
+- ✅ **S2** Data ingestion + Postgres + pgvector + OpenAI embeddings [D1, D2, D5]
+- ✅ **S3** Hybrid retrieval + cross-encoder reranker + MMR [D3]
+- ✅ **S4** Eval golden set + RAGAS harness + IR metrics + A/B runner [D19]
+- ✅ **S5** Tiered LLM client + structured grounded recs + LangChain v1 chains [D4, D6]
+- ✅ **S6** FastAPI service — recommend / stream / feedback / history + health [D7]
+- ✅ **S7** 3-layer Redis cache — embedding / response / semantic [D10]
+- ✅ **S8** Circuit breakers + fallback chains + kill switch [D21]
+- ✅ **S9** Clerk JWT auth + multi-tenant scoping + ACL-at-retrieval [D9, D18]
+- ✅ **S10** Per-user daily quota + token-budget guard + cost meter [D20]
+- ✅ **S11** structlog + OTel + Langfuse + PII redaction [D13, D18]
+- ✅ **S12** Next.js + Clerk → streaming UX → cover art → app shell + ⌘K palette [D8]
+- ✅ **S13** Docker multi-stage + compose e2e parity (incl. LocalStack) [D15]
+- ✅ **S14** SQS workers + KEDA ScaledObjects + DLQ + idempotency [D11]
+- ✅ **S15** Terraform modules — vpc, eks, rds, elasticache, s3, sqs, iam, secrets, ecr, monitoring [D14, D15]
+- ✅ **S16** Helm chart + ArgoCD ApplicationSet + Argo Rollouts canary + ESO [D15, D16, D17]
+- ✅ **S17** GitHub Actions CI + RAGAS eval gate + Trivy + tag-triggered ECR push [D16, D19]
+- ✅ **S18** k6 load suite + tuning + portfolio docs
+
+### ✅ S19 — GPU venue spike: vLLM [D12, D4b] — COMPLETE (risk to app ~0%, none realised)
+
+- ✅ S19.0 Hardware recon — RTX 3060 12 GB, compute 8.6, nvidia runtime present
+- ✅ S19.1 Disk cleanup — 45.55 GB freed, C: 47→148 GB
+- ✅ S19.2 Docker → GPU passthrough verified (`nvidia-smi` in container)
+- ✅ S19.3 Model decision — Qwen2.5-7B-AWQ; Llama-3.1 HF token ready
+- ✅ S19.4 vLLM image pull — 9.11 GB download / 30.8 GB on disk
+- ✅ S19.5a UVA blocker solved — `VLLM_USE_V2_MODEL_RUNNER=0`
+- ✅ S19.5b HF token passthrough fixed
+- ✅ S19.5c Weight download — **COMPLETE**, verified 2026-09-12: 5.2 GB, both shards finalized, all 9 snapshot symlinks resolved
+- ✅ S19.6 Measure TTFT / TPOT / tok-s
+  - ✅ S19.6a Harness written + verified — `venue/prompts.json`, `venue/up_vllm.sh`, `bench_venue.py`, `venue/down_venue.sh`, Makefile targets
+  - ✅ S19.6b Harness bugs found + fixed by running it — vLLM CLI drift (`--disable-log-requests` removed, model now positional); cp1252 console crash on box-drawing chars
+  - ✅ S19.6c Clean measurement — **BASELINE ESTABLISHED**. TTFT p50 38.2 / p99 93.5 ms · TPOT 14.8 ms (zero variance, 14.8–14.9 across all 20) · **67.9 tok/s** · E2E p95 2554 ms
+  - ✅ S19.6d Root cause of contamination identified — **host contention from 27 competing containers**, NOT VRAM paging. Stopping the other project's stack collapsed TPOT p99 3.9× (58.6→14.9 ms) and TTFT p99 37× (3490→93.5 ms). GPU had only 1547 MiB free during the clean run and performed perfectly — "free VRAM" was a red herring.
+- ✅ S19.7 `docs/GPU_VENUE.md` written (tracked, portfolio-facing) · teardown reclaimed 9686 MiB VRAM · orphaned partials deleted: volume 8.2G → 5.2G, **3.0 GB reclaimed**, 9/9 symlinks verified intact
+- ✅ S19.8 Protocol A/B/C artifacts + commit prep
+
+### ✅ S20 — GPU venue spike: SGLang [D12, D4b] — COMPLETE (risk to app ~0%, none realised)
+
+- ✅ S20.1 SGLang image pull — **already present** (`lmsysorg/sglang:latest`, 52.2 GB)
+- ✅ S20.2 Cache reuse confirmed — SGLang image sets no HF env overrides, defaults to `/root/.cache/huggingface`; same `vllm-hf-cache` volume mounts unchanged, **zero re-download**. CLI parity mapped: `--mem-fraction-static`↔`--gpu-memory-utilization`, `--context-length`↔`--max-model-len`
+- ✅ S20.3 SGLang server up — `scripts/venue/up_sglang.sh` + `make venue-up-sglang`; loaded ~240 s on port 8001 with parity flags (`--mem-fraction-static 0.90` ↔ vLLM gpu-util, `--context-length 4096` ↔ max-model-len). Preflight refuses to start alongside vLLM and warns when the host is busy (S19 finding)
+- ✅ S20.4 `.env` venue toggle — `LLM_VENUE` / `LLM_VENUE_URL` / `LLM_VENUE_MODEL` + `LLM_VENUE_ROUTING_ENABLED=false` (S21 dark-ship gate) documented in `.env.example`
+- ✅ S20.5 Measured with the identical harness + fixture — TTFT p50 39.9 / p95 105.3 / p99 249.5 ms · TPOT 14.4 ms · **69.8 tok/s** · E2E p50 1985 ms. Conditions matched (2 containers, quiet host)
+- ✅ S20.6 A/B comparison — `scripts/venue/compare.py` + `make venue-compare`, parity-checked (6/6 controlled vars match, voids itself on drift). **Split decision: vLLM wins TTFT tails (p99 2.67×), SGLang wins decode (+2.8% tok/s). Length-normalised: SGLang 2145 ms vs vLLM 2203 ms for 146 tok — a 2.6% gap.** Both clear every NFR by 20–45×, so speed is not the deciding factor
+- ✅ S20.7 `docs/GPU_VENUE.md` extended — both engines, parity mapping table, head-to-head, **recommendation (vLLM) with the flip condition**, host-contention finding, scope limits
+- ✅ S20.8 **D4b added + D12 amended** in `docs/DECISION_LOG.md` — new Decision 4b (multi-venue serving) with measured evidence table + engine flip condition; D12 amended to separate its *cost* argument from the *capability* claim measurement refuted; at-a-glance row + 2 revision-history entries added
+- ✅ S20.9 Protocol A/B/C artifacts + commit prep — 6/6 verification green, clean teardown (11472 MiB free), both images intact
+
+### ✅ S21 — Multi-venue serving integration [D4, D4b, D12] — COMPLETE 11 / 11 — routing LIVE
+
+> Mandatory guard: `LLM_VENUE_ROUTING_ENABLED=false` by default. Ships dark.
+
+- ✅ S21.0 Cost-meter zero-rate for the venue model — self-hosted tokens have no *marginal* cost, merged as a default in `get_pricing()` so flipping the flag can't die with `UnknownModelError` on the hot path; explicit `LLM_PRICING` still wins (21 tests pass)
+- ✅ S21.1 `VenueClient` — `ChatOpenAI` with `base_url` at the local endpoint. Both engines are OpenAI-compatible, so this is ~20 lines, not a new client hierarchy
+- ✅ S21.2 Venue config — `venue_enabled/url/model/timeout/confidence_threshold()` read lazily from env (matches the existing lazy-config precedent)
+- ✅ S21.3 Wired — `build_default_llm_client()` flag branch (venue imported INSIDE the function; module-level would be circular since venue.py imports from llm_client.py) + `RETRIEVAL_CONFIDENCE` published by both `recommend()` and `astream()` via `_top_rerank_confidence()`. **Flag-off identity PROVEN**: inner is exactly `TieredLLMClient`, unchanged. **284/284 tests pass, 0 regressions.** ruff + mypy clean
+- ✅ S21.4a **Confidence distribution MEASURED** (111 golden queries) — `scripts/venue/measure_confidence.py`. clear −0.49 > edge −3.22 > vague −4.84 > adversarial −11.25 (medians), monotonic as hypothesised. **VERDICT: SEPARATES**
+- ✅ S21.4b **Threshold derived from data: 1.0** — lowest value where 0% of vague queries misroute, costing only 3 pts of clear coverage vs 0.0. Routes 44% clear / 18% edge / 0% vague / **0% adversarial**. Adversarial is 0% at every threshold to −6.0 (max −9.70) — structural, not tuned
+- ✅ S21.4c Router — `should_use_venue()` **fails safe**: `None` confidence (reranker timeout → hybrid fallback) routes to hosted, never the weakest model
+- ✅ S21.5 Circuit breaker — `build_venue_client()` reuses the existing `ResilientLLMClient` + `AsyncCircuitBreaker(name="venue")`
+- ✅ S21.6 Fall-through chain — `VenueRoutedClient` wraps (not modifies) `TieredLLMClient`; handles failure, refusal, and empty-result separately; stream falls through only before the first token
+- ✅ S21.7 Per-venue observability — `record_venue_decision()` counter (hosted / venue_served / venue_fallback_error / venue_fallback_empty) with the alert condition in its description; `record_retrieval_confidence()` histogram so live drift from the golden-set distribution is visible; `langfuse_tags=["venue","self-hosted"]` via a new optional `metadata` param on `_LangChainClient` (None for every pre-existing client, so their config is unchanged). All 5 routing paths behaviourally verified — **every path still returns an answer**
+- ✅ S21.8 Eval regression — **PASS: no detectable quality cost to routing 26% of traffic to the 7B**
+  - ✅ S21.8a Harness selection — **`make eval` is retrieval-only** (QueryRetriever + IR metrics, never calls an LLM), so flag-off vs flag-on would be identical and reporting it as "no regression" would be a false assurance. `make eval-refusal` runs the full service but its adversarial queries score ≤ −9.70, far below the 1.0 threshold, so they never reach the venue — necessary, not sufficient. Purpose-built A/B written instead
+  - ✅ S21.8b **Control pass added after the first design failed** — v1 compared one off-pass to one on-pass and "FAILED" on a query with confidence −9.0 that routing never touched. LLM output is non-deterministic even at temperature 0. v2 runs OFF / OFF-control / ON so provider noise is measured, not attributed to the feature
+  - ✅ S21.8c **Noise floor measured: 35%** (7/20 recommendation sets change between two *identical* passes). The single-baseline design would have blamed all of it on routing
+  - ✅ S21.8d Verdict given a ~2 sd Poisson margin — a bare `effect > noise` test fails on 4-vs-3 at n=12, which is evidence of nothing
+  - ✅ S21.8e Full 111-query × 3-pass run — **PASS**. 29/111 (26%) venue-eligible, matching the predicted 26% exactly. Noise floor (off vs off): 41 set-changes, 34 below-threshold, 7 refusal flips, 17 fewer-item. Routing effect (off vs on): 40 / 23 / 7 / 16 — **at or slightly below noise on every metric**. The n=20 "fewer grounded items" concern (2 vs 5) did NOT survive at n=111 (17 vs 16) — it was sampling noise, caught by the significance margin
+- ✅ S21.9 Tests — `packages/core/tests/test_venue.py`, **19 tests**: threshold boundary (inclusive at 1.0), fail-safe on None, dark-ship default, below/above-threshold routing, failure + empty fall-through, **refusal honoured not second-guessed**, streaming fall-through before first token, **flag-off composition identity**, flag-on wrapping, zero-rate cost + explicit-config override. **303/303 suite passes** (was 284)
+- ✅ S21.10 **Flag flipped ON + verified live** — `LLM_VENUE_ROUTING_ENABLED=true` in `.env`. End-to-end through the real HTTP API: high-confidence (+5.395) → **vLLM delta 1**, returned "Fullmetal Alchemist"; low-confidence (−10.434) → **vLLM delta 0**, hosted served. Revert = set the flag back to `false`, no redeploy
+  - ✅ S21.10a **Bug found + fixed during live verification** — OTel histograms reject negative values, and rerank scores are raw logits (−11 to +7), so `anime.retrieval.confidence` was silently recording NOTHING for most queries. Now records `sigmoid(logit)`: non-negative, bounded, monotonic (percentiles preserved), interpretable as probability. Routing still compares the RAW logit, so the decision is never mediated by the transform
+  - ✅ S21.10b Finding — **the signal is phrasing-sensitive**. "relaxing slice of life comedy about quirky high school girls" = +4.083 but "gentle comedy about cute schoolgirls doing everyday things together" = −3.248. Near-identical semantics, 7.3 points apart. The threshold is defensible on the measured distribution but individual routing decisions are brittle to wording — the confidence histogram is how drift gets caught
+  - ✅ S21.10c **Container-networking bug found + fixed** (surfaced by a "how do I run this?" question). `anime-vllm` sat on the default bridge, not the compose network, while `.env` carries `localhost:8001` — so a CONTAINERISED api (`make app`) could never reach the venue and would **silently fall through to hosted while the GPU sat idle**. Fixed the way this repo already fixes it for Langfuse: both venue scripts join `anime-recommender_default` and claim the shared alias `anime-venue`; compose overrides `LLM_VENUE_URL` for api **and** worker. The alias is shared by both engines, so app config stays engine-agnostic
+
+---
+
+## PHASE 5 — Hardening ✅ 5 / 5
+
+*3 batches / 36 files / 9 commits / +10 RTBF tests / 241 tests pass*
+
+- ✅ P5.1 Secrets · dependency · license audit
+- ✅ P5.2 Load test — k6 suite (smoke / 50rps / stream 30rps / peak 200rps / ramp-to-knee)
+- ✅ P5.3 Chaos drills — `kill_llm.sh` / `kill_pg.sh` / `net_partition.sh` / `restore.sh`
+- ✅ P5.4 Backup / restore drill — idempotent restore
+- ✅ P5.5 Runbooks · alerts · cost thresholds · log retention · RTBF
+  - ✅ P5.5.1 Runbooks — provider-outage, cost-spike, db-down, eval-regression
+  - ✅ P5.5.2 Alerting routing — conditional Slack stack
+  - ✅ P5.5.3 Cost-alert threshold verification
+  - ✅ P5.5.4 Log retention policy — class-based via TF var
+  - ✅ P5.5.5 RTBF — Clerk-first, idempotent audit row
+
+---
+
+## PHASE 6 — Release Packaging 🔄 3 / 12
+
+> "Build once, deploy many." One immutable signed artifact set, consumed unchanged by Phases 7/8/9.
+>
+> **Gates locked:** G1=B PAT registry auth (cosign signing stays keyless — separate OIDC token) ·
+> G2=B digests in a lockfile · G3=A layered values · G4=A chart version = app version ·
+> **G5=C `cd.yml` left untouched** — two pipelines publish independently, so "same digest
+> everywhere" is FALSE until resolved. **Recorded as a Phase 9 blocker for P9.5's portability proof.**
+>
+> **Phase 9 blockers found during P6.7** (deliberately not fixed — G5=C): ① two builds → two digests (above) · ② `cd.yml` pushes `anime-api` (flat) but the chart pulls `anime-recommender/api` — ①② documented in `values-aws.yaml` · ③ `cd.yml` bump-helm regex needs `tag: vX.Y.Z` in `values-prod.yaml`, which has always had `tag: ""` → the first release's bump job exits "No tag patterns matched"
+>
+> **Release workflow decisions approved 2026-09-14:** R1=A tag `v*.*.*` + manual dry-run · R2=B web reads site URL + Clerk publishable key at RUNTIME (one web image for every environment) · R3=A digest lockfile as Release asset + auto-PR to `release/images.lock` · R4=A third-party actions pinned by commit SHA · R5=A linux/amd64 only · R6=A ghcr app images + chart public (MinIO mirror stays private). Build order: R2 web runtime config → `release.yml` + `docs/RELEASE.md` + `make package` + render-verify in CI → local checks → your push, dry-run, tag. GitHub secrets verified present by name: `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`, `GHCR_PAT`. Local tools: helm 4.1.4, actionlint 1.7.12, buildx 0.36; syft / trivy / cosign not installed (they run in CI)
+>
+> **R2 implemented 2026-09-14 (static checks pass; live two-container proof pending):** new `apps/web/src/lib/runtime-config.ts` (`siteUrl()` / `configuredSiteUrl()` / `clerkPublishableKey()`, runtime names first, `NEXT_PUBLIC_*` fallback for `pnpm dev`) + 5 unit tests; `layout.tsx` renders per request (`dynamic = "force-dynamic"`, `generateMetadata()`), passes `publishableKey` to `ClerkProvider`; `middleware.ts` passes it via the per-request options callback and keeps the req.url fallback when no site URL is configured; web Dockerfile build ARGs removed; compose web gets runtime `SITE_URL` / `CLERK_PUBLISHABLE_KEY` mapped from the existing `.env` names (no `.env` change); Helm `web.yaml` + `web.siteUrl` / `web.clerkPublishableKey` values (local: http://localhost:3000; empty derives https://<ingress.host>); ci.yml web image build args removed; `.env.example` comment. **Checks:** compose config shows runtime env + only the billing build arg; `make render-verify` PASS (12/12, 3 negative controls); web typecheck 0, lint 0, tests 28/28.
+>
+> **Release workflow implemented 2026-09-14 (P6.2–P6.6, P6.8; written and linted, NOT yet run on GitHub):** `.github/workflows/release.yml` · tag `v*.*.*` or manual dry run (publish only on a plain vX.Y.Z tag) · per image: build once (amd64, base from `base-images.lock`) → Trivy v0.74.0 gate (fixable HIGH/CRITICAL) → syft v1.51.1 SPDX SBOM → `docker push` of the scanned image to ghcr + Docker Hub, fail if digests differ → cosign v3.1.3 keyless sign both refs + SBOM attestation → `cosign verify` as a consumer · chart: kubeconform v0.7.0 (sha256-verified) + render-verify → `helm package` version = app version → push `oci://ghcr.io/ghourimarti/charts` → sign + verify · record: `release/images.lock` + `release/values-images.yaml`, Release assets, auto-PR · all 10 third-party actions pinned to commit SHAs. `docs/RELEASE.md` (one-time setup incl. making ghcr packages public by hand, dry run, verify, deploy by digest, caveats). `make package` (local bundle, nothing pushed). `ci.yml` new `chart` job (render-verify) required by `CI OK`. **Checks:** `actionlint` clean on release.yml + ci.yml; `make -n package` shows render-verify → 3 pinned-base builds → chart package. **Unproven until run on GitHub:** cosign v3 signing/attest/verify, Docker Hub digest equality, the PR step. Next: your push, a dry run, then tag v0.1.0
+
+- ✅ P6.1 Reproducible builds — **`base-images.lock`** at repo root, shell-sourceable, pins `uv` + `node` by sha256 digest. All 3 Dockerfiles annotated that the lock is authoritative and the tag default is an unpinned fallback. `scripts/release/refresh_base_images.sh` + `make base-images-check|refresh`
+  - ✅ P6.1a **Bug found by running it under make** — `docker` inside the `while read` loop consumed the loop's stdin, so it processed one entry then died. Works interactively (TTY), fails under make/CI — exactly where the gate runs. Fixed with `< /dev/null`; verified under TTY, make and piped stdin
+- ⏳ P6.2 Dual registry setup
+  - ⏳ P6.2.1 `ghcr.io` — deployment source of truth; **PAT auth per G1=B** (note: `GITHUB_TOKEN` + `packages: write` would need no stored credential)
+  - ⏳ P6.2.2 Docker Hub — public showcase mirror only; never a cluster pull source
+- ⏳ P6.3 Tagging — `:<git-sha>` immutable + `:vX.Y.Z` semver; `:latest` local-only
+- ⏳ P6.4 SBOM (syft) + vulnerability scan (trivy) gating the push
+- ⏳ P6.5 **Cosign keyless signing** (Sigstore/Fulcio/Rekor via GitHub OIDC) + verification policy
+- ⏳ P6.6 Helm chart → OCI artifact on `oci://ghcr.io/ghourimarti/charts`, signed, version-pinned
+- ✅ P6.7 Values matrix — **vendor-neutral `values.yaml`** (ghcr.io registry, `tag: ""` → `appVersion`) + `values-local` / `values-doks` / `values-aws`; layering base → vendor → env. Toggles: `rollout.enabled` (Deployment fallback sharing **one** pod template, `anime.api.podTemplate`) · `keda.enabled` + `keda.triggerMetadata` · `networkPolicy.ingressFrom` · `required()` on ESO store and `sqsQueueUrlBase`. **Characterization diff** (parsed YAML, old vs new aws × base/dev/staging/prod): only the intended changes
+  - ✅ P6.7a **Bug:** prod rendered `…/api:` (empty tag → trailing colon). `helm` exits 0 and kubeconform accepts it; it fails only at kubelet pull. Fixed: tag falls back to `appVersion`, empty result fails the render
+  - ✅ P6.7b **Dead config:** `api.canary.steps` was ignored — the template hardcoded an identical copy. Now rendered; `--set api.canary.steps[0].setWeight=99` probe proves it
+  - ✅ P6.7c **NetworkPolicy wrong for EKS:** admitted the `ingress-nginx` namespace, but ALB IP-mode traffic comes from VPC ENIs — dropped with VPC CNI enforcement on, a silent no-op with it off. `values-aws` admits VPC CIDR `10.0.0.0/16`
+  - ✅ P6.7d **Regression caught before commit:** the ArgoCD ApplicationSet layered only `values-<env>.yaml` (relying on the old AWS-shaped base) → all 3 Applications would fail to render. `valueFiles: [values-aws.yaml, values-<env>.yaml]`; proven identical to the gate render, old list proven failing
+  - ✅ P6.7e Docs: chart README (layering + toggles-by-vendor table), root README deploy block, PR template checkbox
+  - Left OPEN for Phase 8, disabled rather than guessed in `values-doks`: secret backend (P8.6) · SQS reachability + KEDA auth without IRSA
+- ⏳ P6.8 `make package` — full release bundle + `RELEASE.md`; also wires `make render-verify` into CI
+- ✅ P6.9 Render-verify — `scripts/release/render_verify.sh` + **`make render-verify`**: 12/12 vendor × env renders · `kubeconform -strict` **offline** against pinned K8s v1.31.0 schemas (`yannh` @ `970cc70`, = EKS module version) + CRD catalog (`datreeio` @ `ad3b08c`) · contract: local renders emit no Rollout/AnalysisTemplate/ScaledObject/ExternalSecret · **3 negative controls** (unknown field rejected *for that field* · missing schema is an error not a skip · forced Rollout in local detected) · cold 7s / warm 5s · `helm lint` clean ×3 vendors
+  - ✅ P6.9a **Found:** `kubeconform … | tail` exits 0 on invalid manifests (`$?` is tail's) → `pipefail`
+  - ✅ P6.9b **Found:** downloading schemas during validation made the gate flaky — 2–3 of 12 renders failed on raw.githubusercontent 503s with **0 invalid manifests**; kubeconform probes the K8s location first for CRDs and a 503 there is fatal → fetch each schema once (curl retry/backoff), validate offline
+  - ✅ P6.9c **Found:** the negative control could "pass" on a download error (any non-zero exit) → must be rejected for the corrupted field
+  - ✅ P6.9d **Found:** kubeconform's default Kubernetes version is `master` → pinned to 1.31.0
+- ⏳ P6.10 Consumption proof — pull from registry, `cosign verify`, deploy to kind
+
+---
+
+## PHASE 7 — Local & kind validation 🔄 2 / 6
+
+> Cost $0. Answers: "are my manifests correct?"
+
+- ✅ P7.1 Docker images — api / web / worker, multi-stage, non-root, healthchecks, Trivy-clean
+- ✅ P7.2 `docker compose` full-stack cold-start e2e smoke + backup drill
+  - ✅ P7.2.1 `scripts/deploy/smoke_local.sh` — hybrid auth coverage
+  - ✅ P7.2.2 `deploy/stage1-local-docker.md`
+  - ✅ P7.2.3 Makefile — `deploy-stage1`, `deploy-stage1-smoke`
+  - ✅ P7.2.4 Acceptance run — cold start → migrate → ingest → smoke → k6 → backup drill → cleanup
+  - ⏳ P7.2.5 Re-verify with registry-pulled images (post-Phase-6)
+- 🔄 P7.3 kind cluster created; Helm chart installs green
+  - ✅ P7.3.1 `values-local.yaml` — ESO off, Rollout off, Ingress off, `IfNotPresent` — **delivered early by P6.7** (also KEDA + NetworkPolicy off, empty registry for `kind load`)
+  - ⏳ P7.3.2 `scripts/deploy/up_local_k8s.sh` — idempotent stand-up
+  - ⏳ P7.3.3 `scripts/deploy/down_local_k8s.sh` — teardown (+ `--soft`)
+  - ⏳ P7.3.4 `scripts/deploy/smoke_k8s.sh` — via `kubectl port-forward`
+  - ⏳ P7.3.5 `deploy/stage2-local-k8s.md`
+  - ⏳ P7.3.6 Makefile — `k8s-render`, `k8s-up`, `k8s-down`, `deploy-stage2`
+  - ✅ P7.3.7 `helm template | kubeconform -strict` clean — **delivered early by P6.9**: `make render-verify` covers local × 4 envs, including the no-CRDs contract
+- ⏳ P7.4 Probes, HPA, ConfigMap/Secret wiring, in-cluster DNS verified
+- ⏳ P7.5 In-cluster failure drills — pod kill, rollout restart, node drain
+- ⏳ P7.6 `terraform plan` reviewed (no apply)
+
+**Open gates:** #1 kind · #2 plain K8s Secrets · #3 plain Deployment · #4 hand-rolled PG/Redis · #5 backup drill included → recommended `A/A/A/C/A`
+
+---
+
+## PHASE 8 — Real managed Kubernetes ⏳ 0 / 12
+
+> Metered. DOKS first, vendor-portable by design.
+
+- ⏳ P8.1 Vendor selection + cost model committed to repo
+- ⏳ P8.2 Cluster provisioned via Terraform (never click-ops)
+- ⏳ P8.3 `imagePullSecret` for ghcr.io — images pulled, not rebuilt
+- ⏳ P8.4 Data tier — managed Postgres + Redis (or in-cluster for portability)
+- ⏳ P8.5 ingress-nginx + cert-manager + TLS + DNS
+- ⏳ P8.6 Secrets management — DO has no Secrets Manager → Sealed Secrets / SOPS / Vault
+- ⏳ P8.7 App tier via `helm install … -f values-doks.yaml`; venue config per D4b
+- ⏳ P8.8 Observability live — Prometheus, Grafana, alerts firing
+- ⏳ P8.9 Load test against the real cluster — HPA actually scaling
+- ⏳ P8.10 Chaos drills against the real cluster — node/pod failure
+- ⏳ P8.11 Real cost measurement — $ per 1k queries
+- ⏳ P8.12 Teardown runbook + `terraform destroy` verified — no orphaned LBs / volumes
+
+---
+
+## PHASE 9 — AWS EKS ⏳ 0 / 9
+
+> Portability proof + the AWS-depth gap from the skill audit.
+
+- ⏳ P9.1 AWS account + GPU-instance quota approved (Track D)
+- ⏳ P9.2 Terraform — VPC + EKS + managed node groups
+- ⏳ P9.3 IRSA — IAM Roles for Service Accounts, least privilege
+- ⏳ P9.4 RDS (with PITR) + ElastiCache + SQS + Secrets Manager + ESO
+- ⏳ P9.5 **Same chart + same digests via `values-aws.yaml` — diff must be config-only**
+- ⏳ P9.6 GPU node group for a real self-hosted venue (`g4dn`/`g5` spot) — cost decision
+- ⏳ P9.7 ArgoCD bootstrap + staging namespace + canary + rollback rehearsal
+- ⏳ P9.8 Cost comparison — DOKS vs EKS, measured
+- ⏳ P9.9 Portability findings written up
+
+---
+
+## PHASE 10 — Portfolio ⏳ 0 / 6
+
+- ⏳ P10.1 Architecture diagram
+- ⏳ P10.2 README rewrite
+- ⏳ P10.3 Before/after metrics story — naive RAG → hybrid+rerank+MMR; API-only → multi-venue
+- ⏳ P10.4 Findings writeup — every measurement that refuted an assumption
+- ⏳ P10.5 Demo video / screenshots
+- ⏳ P10.6 Interview talking points + consolidated senior-vs-junior table
+
+---
+
+## TRACK L — Local stack lifecycle (Makefile) 🔄 12 / 15
+
+> Requested 2026-09-13. Every lifecycle command is built from base targets; only base targets call `docker compose`.
+> **Gates:** M1=B hard rename, no aliases · M2=B `make up` stops any venue (frees the GPU) ·
+> M3=B targets depend on the tier they need · M4=A live-verify up → up-sglang → up-vllm → down; `downv` / `upv` dry-run only
+>
+> **Measured before design** (throwaway compose project): `down <services>` leaves other tiers running ·
+> `down -v <services>` deletes only that tier's volumes · `vllm-hf-cache` has no compose label, so no `downv` touches it ·
+> a venue attached to the network makes a full `down` exit 0 but **leave the network behind** ·
+> `.env` routing=true reaches the containers unless make passes the value explicitly
+
+- ✅ L.1 Base compose targets — `up-data` (`--wait` until healthy) / `up-app` / `up-obs`, `down-*`, `downv-data` / `downv-obs`, `net-down`; `DC_*` variables removed. Dry-run step order verified
+- ✅ L.2 Venue base targets — `venue-down-vllm` / `venue-down-sglang` / `venue-down`; `venue-up-vllm` depends on `venue-down-sglang` and vice versa; `venue-bench ENGINE=…` starts that engine first
+- ✅ L.3 Mode targets — `up` (stops any venue, M2=B) · `up-vllm` · `up-sglang` + `make llm-status` (`scripts/venue/llm_status.sh`: routing flag, engine, network, **api → venue reachability from inside the container**). Dry-run verified; `make up` composite proven live (L.9a); `make up-sglang` brought every tier up with routing on and SGLang serves (`llm-status` → api → venue 200 afterwards), but the command exited 2 on the readiness wait (L.9g); repeated on 2026-09-14 with the new flags: exit 2 at the 900 s wait, SGLang serving 3 min later with `llm-status` SELF-HOSTED sglang; **2026-09-14 07:00 at 0.70 / 8192 / 1800 s: `make up-sglang` exit 0 in 458 s** (tiers 30 s, SGLang engine 390 s), `llm-status` SELF-HOSTED sglang; **`make up-vllm` exit 0 in 311 s** (stopped SGLang first, vLLM serving 226 s after start), `llm-status` SELF-HOSTED vllm — all three modes proven live
+  - ✅ L.3a **Pitfall proven before use:** `up-vllm: up` would silently run API-only — make applies a prerequisite's own target variable over its caller's (scratch Makefile, GNU Make 4.4.1)
+- ✅ L.4 Combined targets — `down`, `downv`, `upv`, `deploy-stage1` (API mode; wipes only data volumes, as before), `ps` = `ps-stack` + `venue-status`. No compose call outside the base targets
+- ✅ L.5 Routing reaches the containers — compose interpolates `${VENUE_ROUTING:-false}` for api + worker. `docker compose config` with `.env` holding `true`: unset → false · false → false · true → true
+  - ✅ L.5a **Bug avoided:** interpolating `${LLM_VENUE_ROUTING_ENABLED}` reads `.env` too — `.env` would have silently picked the mode for every command. A name `.env` does not define keeps the choice with the make target
+- ✅ L.6 Venue scripts — an already-running venue gets attached to the app network; SGLang container port 30000 → 8000. `bash -n` clean; **proven live** (L.9c: attach control + api → SGLang 200, old port 30000 refused)
+  - ✅ L.6a **Bug found by reading:** SGLang listened on 30000 inside its container while compose calls `anime-venue:8000` — a containerised api could never reach SGLang and silently fell back to the hosted LLM
+- ✅ L.7 Dependents (M3=B) — `up-data`: ingest, retrieve, eval, eval-gate, eval-refusal, recommend, db-migrate, db-shell, dev-api, worker, sqs-init, backup-*, rtbf · `up-app`: chaos-llm/pg/net, deploy-stage1-smoke · `up-obs`: lf-models · `venue-up-$(ENGINE)`: venue-bench. **Deliberately none** on dev-web and load-* (port 1005 is served by the container OR a host api; auto-starting one collides with the other). CI calls uv directly, never make
+- ✅ L.8 Hard rename (M1=B) — `db` / `app` / `obs` / `obs-up` / `obs-down` / `dev` removed (now "No rule to make target"); 31 edits across 9 files: README, 3 compose headers, root compose, `.env.example` (+ note that containers ignore its routing value), `measure_confidence.py`, both venue scripts
+- ✅ L.9 Verification — live up → up-sglang → up-vllm → down (llm-status, containers, network, volumes, images at each step) · `make -n downv` / `make -n upv` ✅ dry-run order verified · **Complete 2026-09-14:** the full M4 sequence ran live — `make up` (13 Sep), then `make up-sglang` 458 s, `make up-vllm` 311 s and `make down` 43 s (14 Sep), all exit 0
+  - ✅ L.9a **`make up` live, all three tiers:** 19 containers — 16 running, 3 one-shots exited 0 (migrate, sqs-init, minio-create-bucket) · `llm-status` → API-based, rc 0 (routing `false` inside the api while `.env` says `true`) · HTTP 200: api /health + /ready, web, Grafana, Prometheus, OTel metrics, MinIO · Langfuse 200 (`3.225.4`) once its cold start finished (~4 min) · first run pulled the 4 pinned obs images
+  - ✅ L.9b **Observability tier unblocked (O2):** cached `minio/minio` mirrored to a **private** `ghcr.io/ghourimarti/minio:RELEASE.2025-09-07T16-13-09Z` (pushed by you with `scripts/release/mirror_image.sh`). Verified here: package visibility `private` · registry digest `sha256:a1a8bd4a…` = the pin for both `minio` and `minio-create-bucket` in `docker-compose.obs.yml` · `compose config --images` resolves no Docker Hub MinIO image. Original blocker: `minio/mc` + `minio/minio` no longer pull from Docker Hub (pre-existing, not caused by Track L)
+  - ✅ L.9c Venue path on the app tier (needs no obs) — base targets, live:
+    - ✅ `make up-app VENUE_ROUTING=true`, then `llm-status` correctly WARNs "routing on but no venue" (an unplanned negative control)
+    - ✅ **vLLM end to end:** `venue-up-vllm` stopped SGLang first (VRAM free 4545 → 10206 MiB), started vLLM on the app network; `llm-status` → api → venue **200**, "SELF-HOSTED vllm"
+    - ✅ **Attach control:** detached SGLang → `llm-status` "on app network: no" + WARN; rerun `venue-up-sglang` → "already running" + **"attached"** → "on app network: yes"
+    - ✅ **SGLang port fix proven:** after an extra wait, `llm-status` → api → venue **200**, "SELF-HOSTED sglang"; direct probe from inside the api: `anime-venue:8000` → 200, `anime-venue:30000` → connection refused
+    - ✅ Nothing deleted: both engine images and the `vllm-hf-cache` weights volume intact
+  - ✅ L.9d **`make down` live:** venue stopped first (VRAM free 232 → 11547 MiB), 0 anime containers, 0 venue containers, network removed. Kept: 7 project volumes, `vllm-hf-cache`, all 5 images. The 7 kind nodes untouched · **Re-verified 2026-09-14 with the new ports and flags:** `make down` exit 0 in 43 s, vLLM stopped first (VRAM free 636 → 10,318 MiB), 0 anime and 0 venue containers, network removed, 0 orphan warnings; kept 7 project volumes, `vllm-hf-cache` and all 6 images
+  - ✅ L.9e **Venue readiness wait:** both venue scripts hardcode 300 s; on this host (17 running containers) SGLang became ready at ~363 s, twice. `make up-sglang` therefore fails although SGLang does come up. **Decision: W1**, implemented — `--wait SECS` in both venue scripts (non-integer rejected with exit 2 before any Docker call), `VENUE_WAIT_SECS ?= 600` passed through by `venue-up-*` (override per run), help + usage updated. Static checks pass. **Your live `make up-sglang` timed out at 600 s twice**; on the 2026-09-14 run SGLang's own startup total was 631 s, missing the wait by ~31 s (see L.9g) · **W applied:** `VENUE_WAIT_SECS ?= 900` · **Live 2026-09-14: still timed out at 900 s** (`make up-sglang` exit 2, 1,761 s including the image rebuild): SGLang container start 06:30:42 UTC, weights alone took 401 s, and the wait ended during CUDA-graph capture · **W2 applied (2026-09-14):** `VENUE_WAIT_SECS ?= 1800`, P5's ENGINE_WAIT; SGLang starts measured here: 363 / 631 / 1,118 s · **W2 confirmed live:** `make up-sglang` exit 0 in 458 s (SGLang engine startup 390 s); 1800 s also covers the worst start measured here (1,118 s)
+  - ✅ L.9f **Finding resolved — the Langfuse worker's `Socket timeout … 30000ms` errors are idle-queue noise, not failures (not caused by Track L).** Source verified: the message is defined in `ioredis@5.10.1` (`built/Redis.js`), the Redis client behind Langfuse's BullMQ queues — not in `@clickhouse/client`. (My first attribution to ClickHouse was unchecked and wrong.) Jobs are not failing: two snapshots 30 s apart show `failed=0` on every queue, nothing waiting or active, `trace-upsert` completed 1 — while 24 errors were logged; 30 of 97 Redis clients sit in blocking reads, i.e. idle workers timing out their 30 s wait. Separately, ClickHouse's first-boot saturation (1856% CPU with 26 containers running) settled to ~2% CPU, host HTTP `SELECT 1` at 61—80 ms
+  - ✅ L.9g **Finding — SGLang slow start traced to `--mem-fraction-static 0.90` (resolved at 0.70 — see the end of this item).** Found by comparing with P5-Medical-Chatbot, where both engines work on this same card: P5's Makefile documents that SGLang's fraction is of TOTAL VRAM and ignores what the Windows desktop already holds, and uses **0.50** (P1 uses 0.90). P1's own log agrees: `Memory pool end. avail mem=0.37 GB`, then prefill CUDA-graph capture at `avail_mem=0.00 GB`, first graph 4 m 55 s. Same card, stopped `tp-sglang` container at 0.55 vs ours at 0.90: load weights 12 s vs 167 s · KV-cache allocation 0.4 s vs 80 s · free after pool 4.87 GB vs 0.37 GB · prefill capture 206 s vs 322 s · **total 229 s vs 631 s**. Not confirmed: spill into shared system memory (Windows shared-GPU counter 125 MB while serving). Even at 0.55 the prefill capture costs ~206 s on this machine. Consequence for S20: the "0.90 ↔ 0.90" parity with vLLM was nominal, not equivalent memory — **D applied:** correction note in `docs/GPU_VENUE.md` §2, the §3 memory row, the §8 condition lock, and the overstated "compare.py verifies parity" line (it checks 6 recorded conditions, none of them memory, context length or host load). The 13-Sep 37-min start is likely the same starvation plus a cold disk (unproven) · **Live run at 0.50 (container start 06:30:42 UTC):** weight load 400.75 s (0.90 run: 167 s) while C:, Docker's disk, sat idle at 0.2–0.5 MB/s and the VM held 13.6 GB of page cache — so the slow load is NOT the C: drive (cause unknown; the busy disk was E:, a 2 TB HDD Docker does not use, at 414%). **New concern — KV cache only 1,618 tokens at 0.50** (0.90: 83,721; `tp-sglang` at 0.55: 11,881), smaller than one request at `--context-length 4096` and than the app's `.env.example` budget (3,000 input + 1,200 output). Free VRAM after the pool was 5.57 GB, far more than CUDA-graph capture used on `tp-sglang` (~1.9 GB), so a fraction between 0.50 and 0.90 likely serves both. **G is not counted as fixed until a real-size request is served by SGLang** · **Result at 0.50:** serving at 06:49:20 UTC, **18 min 38 s** after container start (0.90 run: 631 s). Engine timings: load_weight 400.75 s (0.90: 166.56), kv_cache_allocation 0.56 s (0.90: 79.97), prefill CUDA graph 396.21 s with 4.48 GB free (0.90: 321.91 s at 0.00 GB). **So memory starvation did NOT cause the slow start** — with ample free VRAM, weight load and graph capture were still slow; that part of the G diagnosis was wrong, and the startup cause remains unknown. Limits at 0.50: max_total_num_tokens 1,618, max_req_input_len 1,612. Direct requests: 76- and 1,126-token prompts served (HTTP 200); 3,326 + 1,200 tokens rejected by the 4,096 context limit, not by the KV cache (see L.9i). KV-limit isolation test and a real app request running · **KV test:** a real app request ("anime like Fullmetal Alchemist Brotherhood…") was served by SGLang — 907-token prompt, **56% of the 1,618-token KV cache** for one request. Direct prompts of 1,676 and 2,476 tokens were rejected: HTTP 400 "Input length exceeds the maximum allowed length (1612 tokens)". **Verdict: 0.50 is not acceptable here** — it did not speed up startup, and it rejects any prompt over 1,612 tokens although the app allows 3,000, sending those silently to Groq / OpenAI. Fraction decision pending · **F1 applied:** `SGLANG_MEM_FRACTION ?= 0.70` and script default 0.70 (estimated ~42k-token KV cache and ~3 GB free — to be measured). The Makefile comment, script header and the `GPU_VENUE.md` correction note were rewritten so they no longer blame slow starts on memory · **Live at 0.70 (run start 07:00:30 UTC):** tiers already up, so SGLang started after 30 s (no image rebuild); weight load 62 s; **KV cache 42,669 tokens** (estimate ~42k confirmed); free after the pool 2.17 GB (estimate ~3 GB — lower than estimated); CUDA-graph capture in progress. App healthy meanwhile: api /health + /ready, web and Langfuse 200, 16 containers running, none unhealthy; `llm-status` correctly WARNs that requests fall back to Groq / OpenAI while SGLang loads · **Verified at 0.70:** serving after 390 s engine startup (weights 62 s, prefill CUDA graph 316 s); max_total_num_tokens 42,669, max_req_input_len 8,186; 1.22 GB free after capture and ~0.4 GB free card-wide with the desktop (OOM risk if desktop apps grow). Direct prompts of 76 / 1,126 / 3,326 tokens all HTTP 200; a real app query was served by SGLang (886-token prompt, 2% of the KV cache). Slow-start cause still unknown (engine starts measured 390–1,118 s) · **Independent confirmation:** Prometheus `anime_llm_venue_decisions_total{decision="venue_served"}` went 0→1 at 06:51:30 and 1→2 at 07:09:30, and Langfuse generations at 06:51:00 and 07:08:36 were `Qwen/Qwen2.5-7B-Instruct-AWQ` (ChatOpenAI) — SGLang really served both app queries
+  - ✅ L.9h **Defect (Track L): compose warns "Found orphan containers" on every per-tier call** — each base target loads only its own tier's compose files, so the other tiers' containers look like orphans. Harmless today, but anyone adding `--remove-orphans` would delete the other tiers. **H applied:** `export COMPOSE_IGNORE_ORPHANS := true`; verified that make passes it to compose; **confirmed live:** 0 orphan warnings across all 3 tier compose calls (data, app, observability) of `make up-sglang` on 2026-09-14; the previous run printed one on every tier call
+  - ✅ L.9i **Finding — app token budget exceeds the venue context (pre-existing, S21 config):** `LLM_MAX_INPUT_TOKENS=3000` + `LLM_MAX_OUTPUT_TOKENS=1200` = 4,200 > `--context-length 4096`. SGLang rejected a 3,326 + 1,200-token request with HTTP 400 "exceeds the model's maximum context length". A rejected venue call does not raise in the app — it silently falls back to Groq / OpenAI. vLLM runs the same 4,096 limit (not yet tested there). One real app prompt measured at 907 tokens (SGLang prefill log); the size range across queries is not yet measured · **C1 applied:** `VENUE_CONTEXT_LEN ?= 8192`, passed to both engines (vLLM `--max-len`, SGLang `--context-len`); script defaults 8192; the `GPU_VENUE.md` condition lock notes S19/S20 ran at 4096. Dry runs verified; live check pending · **SGLang verified at 8192:** the 3,326 + 1,200-token request rejected at 4096 now returns HTTP 200 (prompt 3,326, finish=stop); **vLLM verified at 8192:** KV cache 52,688 tokens (6.43× concurrency at 8,192), 76 / 1,126 / 3,326-token prompts all HTTP 200, **CORRECTED 2026-09-14:** the "real app query served by vLLM" claim was wrong — vLLM received a request at 07:15, but Langfuse recorded the answer from Groq `openai/gpt-oss-20b` and Prometheus captured no routing decision for it; unverified, see L.15
+- ✅ L.10 **Separate host ports per engine (requested 2026-09-14):** SGLang → **1020**, vLLM → **1021**. Verified free: no Windows listener, no Windows excluded port range, no Docker binding. Container port stays 8000, so the app's `anime-venue:8000` path is unchanged. Touches every hardcoded 8001: Makefile (`VENUE_PORT`, `VENUE_URL`, help), both venue scripts, `bench_venue.py` default, `venue.py` default, `.env.example` (and your `.env` for a host-run api). **P applied:** `SGLANG_PORT ?= 1020` / `VLLM_PORT ?= 1021` in the Makefile, both venue script defaults, `bench_venue.py` default URL follows `--engine`, `venue.py` default 1021, `.env.example`; your `.env` already had 1021. **Static checks pass:** dry runs show `--port 1020 --mem-frac 0.50 --wait 900` and `--port 1021 --wait 900`, command-line overrides work, help updated, 0 real `8001` references left, 19/19 venue tests pass, ruff clean on changed lines (3 older findings on untouched `bench_venue.py` lines 143/329/342 left as is). **Live:** SGLang container publishes 1020 → 8000 (IPv4 + IPv6) with `--port 8000 --mem-fraction-static 0.50 --context-length 4096`; the old 8001 no longer answers. **SGLang verified live:** 1020 → HTTP 200; `llm-status` SELF-HOSTED sglang with api → venue 200; 8001 closed. vLLM on 1021 pending `make up-vllm` · SGLang re-verified at 0.70 / 8192: 1020 → 8000, `llm-status` api → venue 200 · **vLLM verified live:** container publishes 1021 → 8000, 1021 → HTTP 200, 1020 closed after the switch, `llm-status` SELF-HOSTED vllm with api → venue 200. Free VRAM with vLLM running: ~0.36 GB card-wide (same OOM caution as SGLang)
+- 🔄 L.11 **Live startup progress for venue engines (requested 2026-09-14):** replace the silent dots with phases parsed from the engine's own log (config, weights, KV cache, CUDA-graph capture k/42, serving) with elapsed time; warn when the log goes quiet; fail fast on fatal errors (Traceback, CUDA out of memory) instead of waiting the full 1800 s. **Approved 2026-09-14; implementing** (`scripts/venue/_progress.sh`) · **Implemented 2026-09-14:** `scripts/venue/_progress.sh` (`watch_startup`) sourced by both venue scripts in place of the dots. Phases from the engine log with elapsed time and detail (weights time, KV tokens, CUDA-graph k/N), 60 s heartbeat, silence WARNING after 300 s, fail-fast on container exit and CUDA OOM, tracebacks shown but not fatal; here-strings instead of `| grep -q` (pipefail/SIGPIPE). **Offline test with fake docker/curl/sleep/date: 5/5 cases pass** (SGLang + vLLM happy paths rc 0; stall warn + timeout, OOM, container exit rc 1). Live check pending in L.15
+- ✅ L.12 **Langfuse auto-provisioned (requested 2026-09-14):** `make up` / `make up-obs` must come up with the Langfuse user, org, project and API keys already created, and the api tracing queries immediately · no sign-up, no org/project creation, no copying keys into `.env`. **Diagnosed 2026-09-14 — already working:** the obs compose seeds Langfuse via `LANGFUSE_INIT_*` on first boot of an empty DB, pinned to `.env`'s keys. Langfuse DB: user `admin@anime.local`, org `anime-local`, project `anime-recommender` (all created 2026-07-26), project API key **matches** `.env` `LANGFUSE_PUBLIC_KEY`. Public API with `.env` keys: HTTP 200, 81 traces, latest a real `POST /v1/recommend` at 08:05 UTC; 0 export failures after Langfuse finished starting (the earlier 5 s timeouts were during its cold start). Remaining: the Langfuse UI has no anonymous mode, so one login per browser with the seeded account; show it in `make service_ls` (L.13); traces go to Langfuse twice (SDK direct + collector) — check for duplicates · **Closed 2026-09-14 (user):** nothing to build; the seeded login is shown by `make service_ls` (L.13)
+- ⏳ L.13 **Service directory (requested 2026-09-14):** (1) `make up` / `upv` / `up-vllm` / `up-sglang` end by printing every service URL **without credentials**; (2) new `make service_ls` lists every component · app, both Postgres DBs, Redis, LocalStack, ClickHouse, MinIO, Langfuse, Grafana, Prometheus, OTel, vLLM / SGLang · with live status, URLs and full connection details incl. credentials (for pgAdmin etc.), read from `.env` at run time. **Approved 2026-09-14** (design: `urls` without credentials, live status; `scripts/service_ls.sh` with credentials from `.env`) · **Implemented 2026-09-14:** `scripts/service_ls.sh` (one script, two modes); Makefile `urls` -> `--urls`, new `service_ls`, `upv` prints URLs after ingest, 11 `@echo` lines made ASCII (`·`/`—` showed as `Â·` in the user's terminal). **Verified on the live stack:** `make urls` lists app, setup jobs, LLM mode, engines, databases, storage and observability with live status and no credentials; `make service_ls` adds pgAdmin fields, connection URLs, MinIO / Langfuse / Grafana logins and Langfuse API keys (checked with output masked). Fixed after the run: name column 26 → 30 chars
+- ✅ L.14 **Defect found 2026-09-14 — `make up` can fail while the api is still loading:** a diagnostic `make up` exited 2 after 272 s (08:16:28 UTC). api container started 08:15:33, server process 08:15:49, **application ready 08:17:18 (105 s)** — the reranker model load dominates. The api image healthcheck allows only start_period 20 s + 3 × 15 s ≈ 65 s, so it is marked unhealthy ≈08:16:38 while `web` waits on `api: service_healthy` — strongly consistent with compose aborting `make up`, NOT proven (that run's output was discarded). The api recovered on its own (healthy, /ready 200). Also: `migrate` sat 155 s silent before alembic's first line and shows `unhealthy` because it inherits the api image healthcheck without serving /health.  · **Fix applied (approved 2026-09-14):** app compose api healthcheck override — same probe, `start_period: 180s`, `start_interval: 5s`; `migrate` healthcheck disabled. `docker compose config` verified; live check in L.15 (`make up-vllm` recreates the api) · **Live check 2026-09-14 (make up-vllm, routing false→true recreated the api):** the api runs with `start_period=3m0s start_interval=5s`, `migrate` has no healthcheck, compose printed 0 "dependency failed / unhealthy" lines and the app tier came up. Honest limit: this api was ready in **10 s** (08:41:08→08:41:18), so the 105 s slow-start race was not reproduced; the fix is verified in effect, not under the slow case
+- ⏳ L.15 **Correction + retest: does vLLM really serve routed app queries?** The 07:15 UTC verification query reached vLLM (access log) but Langfuse recorded a Groq `gpt-oss-20b` generation and no Qwen one, and no routing decision was captured (the api was stopped ~90 s later). Retest after the L.14 fix: `make up-vllm`, one high-confidence app query, then require BOTH a Prometheus `venue_served` increment and a Langfuse Qwen generation. Related: the user's 08:05 query used Groq with no routing decision recorded — routing was most likely off, so the 08:12 diagnostic `make up` most likely did not stop an engine in use (not provable: Docker keeps no event history on this machine) · **Approved 2026-09-14** · **Retest run 2026-09-14 08:40 UTC:** `make up-vllm` brought the app tier up with routing on; the L.11 progress display worked live (config parsed 1:45, loading weights 2:51, 60 s heartbeats, silence WARN at 304 s). **vLLM then crawled through weight loading:** stuck-looking at `Loading safetensors checkpoint shards: 0/2` for 13+ min (07:11 run: 2.25 s). Diagnosis: EngineCore state R at 99.5% of one core; voluntary context switches flat over 2 s (pure CPU, no I/O or GPU calls); two py-spy dumps 10 s apart on different tensors (`load_row_parallel_weight`, then `load_merged_column_weight`) — progressing, ~300x slower. Ruled out: disk (C: 0.2 MB/s), VM memory (14 GB available, 11 GB cache), GPU spill into system RAM (Windows shared GPU memory 198 MB), host CPU contention (host idle). Cause unknown. py-spy was pip-installed inside the throwaway vLLM container for the dumps. The background run was stopped before its 1800 s deadline so no queries hit a half-loaded engine; vLLM keeps loading and the routing queries rerun once it serves · **Diagnosis continued 2026-09-14:** Windows power plan is *Power saver* (Ryzen 9 7900X at ~72% of max frequency; suggestive, not proven). CPU speed normal right now (Python loop 0.25–0.34 s host vs 0.55–0.59 s in the Docker VM, ~2x = usual VM overhead). **GPU path healthy:** staged test inside the vLLM container — CUDA init 1.1 s, host→GPU 64 MB 0.008 s, GPU→host 0.068 s. **Correction:** flat voluntary context switches do not rule out GPU calls (non-blocking ioctls do not switch). A first 512 MB test was cut by a 150 s timeout without output (it only printed at the end) and left a stray process in the vLLM container, competing with the loader; nonvoluntary switches rose 1,355→3,547. vLLM was still moving through tensors 24 min in. **Action:** stopped the watcher, restarting vLLM (`make venue-down-vllm` + `make venue-up-vllm`, container only) to tell a transient stall from an environmental one; routing queries run once it serves
+
+> **Open follow-up (not blocking):** `make up-sglang` total is now 458 s (under the 600 s the user saw in another app). SGLang's fixed cost on this card is prefill CUDA-graph capture, 316–396 s on every start (206 s on the other project's `tp-sglang`); weight load varies 12–401 s. The longest runs also included a one-time ~13 min image rebuild after a code change. Options if it matters: keep the engine running (`make up-sglang` reuses a running SGLang), or measure `--disable-prefill-cuda-graph` startup vs TTFT (P5 measured TTFT p50 3.31 s with eager prefill)
+
+---
+
+## TRACK D — user-side async ⏳
+
+- ✅ D.1 HF token
+- ✅ D.2 Qwen2.5-7B-AWQ weight download — **COMPLETE** (5.2 GB verified in `vllm-hf-cache` volume)
+- ⏳ D.3 DigitalOcean account + apply $200 credit
+- ⏳ D.4 AWS account + GPU quota request
+- ✅ D.5 `kind` + `kubeconform` install — verified 2026-09-13: kind v0.32.0, kubeconform v0.7.0
+- ⏳ D.6 Docker Hub account + repo for public mirror (P6.2.2)
+- ✅ D.7 Clerk dev JWT — `scripts/dev_token.py` proven working during S21.10 live verification (tokens expire ~1 h, re-mint as needed)
+- ✅ D.8 Stop the medbot / voyantra kind clusters auto-starting at boot — **diagnosed**: all 7 node containers carry `restart=on-failure:1` (kind sets it so clusters survive a Docker restart). Fix: `docker update --restart=no` on those containers, or `kind delete cluster` if a cluster is no longer needed · **Resolved 2026-09-14:** no kind containers exist any more (0 medbot / voyantra nodes), so nothing can auto-start; the clusters were removed outside this session
+
+---
+
+## Status summary
+
+| Phase | Status | Blocking on |
+|---|---|---|
+| 0–3 | ✅ Complete | — |
+| 4 | ✅ 21 / 21 | — |
+| 5 | ✅ Complete | — |
+| 6 | 🔄 3 / 12 | R1–R6 approved; R2 implementation approved 2026-09-14 (queued after Track L items) |
+| 7 | 🔄 2 / 6 | Gate answers (kind + kubeconform now installed) |
+| 8 | ⏳ 0 / 12 | Phase 6 complete; DO credit (D.3) |
+| 9 | ⏳ 0 / 9 | Phase 6 complete; AWS quota (D.4) |
+| 10 | ⏳ 0 / 6 | Everything above |
+| L | 🔄 12 / 15 | L.11 + L.13 verified (L.11 live) · L.14 done · L.15 waiting for a slow vLLM load, then routing proof |
+
+**Totals:** 6 phases complete (0, 1, 2, 3, 4, 5) · **143 items done · 50 pending · 0 blocked**.
+All development and hardening is finished. Everything remaining is deployment
+(Phases 6–9) plus the portfolio writeup, gated only on user-side accounts in Track D.

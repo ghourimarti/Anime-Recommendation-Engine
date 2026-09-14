@@ -1,6 +1,12 @@
 # Namespace isolation: a ResourceQuota caps blast radius (a runaway
 # Deployment can't starve the cluster) and a default-deny NetworkPolicy stops
 # lateral movement (staging + prod share a cluster — namespaces must be walls).
+#
+# A NetworkPolicy isolates nothing unless the CNI ENFORCES it. kindnet does not;
+# EKS's VPC CNI does only with network-policy enforcement turned on; Cilium
+# (DOKS) does. Where it is not enforced this renders and protects nothing —
+# which is why values-local.yaml disables it rather than imply isolation that
+# is not there.
 {{- if .Values.resourceQuota.enabled }}
 apiVersion: v1
 kind: ResourceQuota
@@ -16,7 +22,8 @@ spec:
 {{- end }}
 {{- if .Values.networkPolicy.enabled }}
 ---
-# Default-deny ingress; allow only same-namespace traffic (web↔api↔worker).
+# Default-deny ingress; allow same-namespace traffic (web↔api↔worker) plus the
+# ingress path, which differs by controller (see networkPolicy.ingressFrom).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -29,7 +36,11 @@ spec:
   ingress:
     - from:
         - podSelector: {}        # same namespace only
-        # The ingress controller's namespace reaches web/api (label it accordingly).
+        {{- range .Values.networkPolicy.ingressFrom.namespaces }}
         - namespaceSelector:
-            matchLabels: { "kubernetes.io/metadata.name": ingress-nginx }
+            matchLabels: { "kubernetes.io/metadata.name": {{ . }} }
+        {{- end }}
+        {{- range .Values.networkPolicy.ingressFrom.cidrs }}
+        - ipBlock: { cidr: {{ . }} }
+        {{- end }}
 {{- end }}

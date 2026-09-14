@@ -33,17 +33,10 @@ RUN corepack enable
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
-# NEXT_PUBLIC_* are inlined into the client bundle at BUILD time (Next limitation),
-# so the Clerk *publishable* key must be a build ARG, not a runtime env. The
-# *secret* key stays a runtime env (it's server-only). Per-env prod builds
-# pass the matching publishable key here.
-ARG NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=""
-ENV NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY}
-# Public origin (browser-facing URL). Used for metadataBase at build time and,
-# more importantly, so the auth middleware builds Clerk return URLs against a
-# reachable address instead of the container's internal 0.0.0.0:3000 bind.
-ARG NEXT_PUBLIC_SITE_URL=""
-ENV NEXT_PUBLIC_SITE_URL=${NEXT_PUBLIC_SITE_URL}
+# The Clerk publishable key and the public site URL are NOT build inputs: the app
+# reads CLERK_PUBLISHABLE_KEY and SITE_URL from the container environment per
+# request (src/lib/runtime-config.ts). Baking them in tied every image to one
+# Clerk instance and one hostname, breaking build once, deploy many (Phase 6, R2).
 # Billing checkout stub flag (UI redesign 3D). Build-time like all NEXT_PUBLIC_*;
 # keep "false" until a payment provider is integrated (needs explicit approval).
 ARG NEXT_PUBLIC_BILLING_ENABLED="false"

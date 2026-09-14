@@ -1,5 +1,5 @@
-# Workers — one Deployment + one KEDA ScaledObject per queue. `range` over
-# .Values.workers keeps it DRY:
+# Workers — one Deployment (+ one KEDA ScaledObject when keda.enabled) per
+# queue. `range` over .Values.workers keeps it DRY:
 # feedback (min 1, warm), ingestion + housekeeping (min 0, scale-to-zero).
 {{- $root := . }}
 {{- range $queue, $cfg := .Values.workers }}
@@ -13,7 +13,12 @@ metadata:
     {{- include "anime.labels" $root | nindent 4 }}
     queue: {{ $queue }}
 spec:
+  {{- if $root.Values.keda.enabled }}
   replicas: {{ $cfg.minReplicas }}   # KEDA owns the live count (ScaledObject below)
+  {{- else }}
+  # No autoscaler: scale-to-zero would mean zero forever, so floor at one.
+  replicas: {{ max 1 $cfg.minReplicas }}
+  {{- end }}
   selector:
     matchLabels:
       {{- include "anime.selectorLabels" $root | nindent 6 }}
@@ -50,6 +55,7 @@ spec:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities: { drop: ["ALL"] }
+{{- if $root.Values.keda.enabled }}
 ---
 apiVersion: keda.sh/v1alpha1
 kind: ScaledObject
@@ -65,11 +71,16 @@ spec:
   minReplicaCount: {{ $cfg.minReplicas }}
   maxReplicaCount: {{ $cfg.maxReplicas }}
   triggers:
+    # The app's queue is SQS (D11) on every vendor; what differs is reachability
+    # and authentication, which come from values (keda.triggerMetadata).
     - type: aws-sqs-queue
       metadata:
-        queueURL: "{{ $root.Values.sqsQueueUrlBase }}/{{ $root.Values.config.sqsQueuePrefix }}-{{ $queue }}"
+        queueURL: "{{ required "sqsQueueUrlBase is required when keda.enabled (see values-aws.yaml)" $root.Values.sqsQueueUrlBase }}/{{ $root.Values.config.sqsQueuePrefix }}-{{ $queue }}"
         queueLength: "{{ $cfg.queueLength }}"
         activationQueueLength: "{{ $cfg.activationQueueLength }}"
         awsRegion: {{ $root.Values.awsRegion }}
-        identityOwner: workload   # KEDA reads depth via the worker SA's IRSA role
+        {{- range $key, $value := $root.Values.keda.triggerMetadata }}
+        {{ $key }}: {{ $value }}
+        {{- end }}
+{{- end }}
 {{- end }}

@@ -8,7 +8,7 @@
 #   langfuse-worker      Langfuse async ingestion
 #   langfuse-web         Langfuse UI                         → host :1013
 #
-# Brought up by `make obs` (standalone) or layered by `make up` (everything).
+# Brought up by `make up-obs` (standalone) or as part of `make up` / `up-vllm` / `up-sglang`.
 # Cold start ~1-3 min: ClickHouse warm-up + Langfuse migrations. First run:
 # open http://localhost:1013, sign up, create org/project, copy the pk-lf/sk-lf
 # keys into .env, set OTEL_SDK_DISABLED=false, restart the api.
@@ -212,7 +212,8 @@ services:
       - "${LANGFUSE_WEB_PORT:-1013}:3000"
 
   minio:
-    image: minio/minio:latest
+    image: ghcr.io/ghourimarti/minio:RELEASE.2025-09-07T16-13-09Z@sha256:a1a8bd4ac40ad7881a245bab97323e18f971e4d4cba2c2007ec1bedd21cbaba2
+    # image: minio/minio:latest
     container_name: anime-langfuse-minio
     command: server /data --console-address ":9001"
     environment:
@@ -230,7 +231,8 @@ services:
       retries: 10
 
   minio-create-bucket:
-    image: minio/mc:latest
+    # image: minio/mc:latest
+    image: ghcr.io/ghourimarti/minio:RELEASE.2025-09-07T16-13-09Z@sha256:a1a8bd4ac40ad7881a245bab97323e18f971e4d4cba2c2007ec1bedd21cbaba2
     container_name: anime-langfuse-minio-init
     depends_on:
       minio: {condition: service_healthy}

@@ -1,6 +1,11 @@
-# api as an Argo Rollouts Rollout — the user-facing service gets a
-# canary with an automated analysis gate + auto-rollback. (web/workers are plain
+{{- if .Values.rollout.enabled }}
+# api as an Argo Rollouts Rollout — the user-facing service gets a canary with
+# an automated analysis gate + auto-rollback. (web/workers are plain
 # Deployments: a bad worker doesn't face users, and KEDA+DLQ cover them.)
+#
+# The pod template is shared with api-deployment.yaml (anime.api.podTemplate).
+# Canary steps come from .Values.api.canary.steps — they used to be hardcoded
+# here as an identical inline copy, which made the values key dead config.
 apiVersion: argoproj.io/v1alpha1
 kind: Rollout
 metadata:
@@ -17,48 +22,16 @@ spec:
   strategy:
     canary:
       steps:
-        - setWeight: 5
-        - pause: { duration: 2m }
-        - setWeight: 25
-        - pause: { duration: 5m }
-        # Automated gate: query success-rate; abort + roll back if it drops.
+        {{- range .Values.api.canary.steps }}
+        {{- if .analysis }}
+        # Automated gate: success-rate + p95 latency; abort + roll back on failure.
         - analysis:
             templates:
-              - templateName: {{ include "anime.name" . }}-api-success-rate
-        - setWeight: 100
+              - templateName: {{ include "anime.name" $ }}-api-success-rate
+        {{- else }}
+        - {{ toYaml . | nindent 10 | trim }}
+        {{- end }}
+        {{- end }}
   template:
-    metadata:
-      labels:
-        {{- include "anime.selectorLabels" . | nindent 8 }}
-        component: api
-        app: {{ include "anime.name" . }}-api
-    spec:
-      serviceAccountName: {{ .Values.serviceAccount.api.name }}
-      securityContext:
-        runAsNonRoot: true
-        runAsUser: 10001
-        seccompProfile: { type: RuntimeDefault }
-      containers:
-        - name: api
-          image: {{ include "anime.image" (dict "root" . "img" .Values.image.api) | quote }}
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
-          ports:
-            - containerPort: {{ .Values.api.port }}
-          envFrom:
-            - configMapRef: { name: {{ include "anime.name" . }}-config }
-            - secretRef: { name: {{ .Values.externalSecrets.targetName }} }
-          # Liveness = process up (no deps); readiness = can serve (checks DB) — the
-          # K8s distinction the api's /health vs /ready endpoints implement.
-          livenessProbe:
-            httpGet: { path: /health, port: {{ .Values.api.port }} }
-            initialDelaySeconds: 20
-            periodSeconds: 15
-          readinessProbe:
-            httpGet: { path: /ready, port: {{ .Values.api.port }} }
-            initialDelaySeconds: 10
-            periodSeconds: 10
-          resources: {{- toYaml .Values.api.resources | nindent 12 }}
-          securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            capabilities: { drop: ["ALL"] }
+    {{- include "anime.api.podTemplate" . | nindent 4 }}
+{{- end }}

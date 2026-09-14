@@ -28,7 +28,7 @@ score is not a usable routing signal on this corpus, and the honest outcome is
 to report that and fall back to G2 option A - not to pick a threshold anyway.
 
 Cost: ~111 OpenAI embedding calls (~$0.0001). Requires the data tier up
-(`make db`) with the corpus ingested.
+(`make up-data`) with the corpus ingested.
 
 Usage:
     uv run python scripts/venue/measure_confidence.py

@@ -6,7 +6,7 @@
 #   web        Next.js frontend → host :1006
 #   worker     async SQS consumer (feedback queue)
 #
-# Requires the DATA tier (postgres/redis/localstack) — `make app` layers both:
+# Requires the DATA tier (postgres/redis/localstack) — `make up-app` layers both:
 #   docker compose -f data.yml -f app.yml up
 # The depends_on entries below reference data-tier services by name; that
 # resolves because all files share `name: anime-recommender` (one project).
@@ -21,7 +21,7 @@
 # api points at http://langfuse-web:3000 and http://otel-collector:4317 (obs
 # tier). If obs is up → resolves. If obs is down → BatchSpanProcessor retries
 # harmlessly and the Langfuse SDK drops; the app does NOT crash. Enable tracing
-# with OTEL_SDK_DISABLED=false in .env when you run `make obs`.
+# with OTEL_SDK_DISABLED=false in .env when you run `make up-obs`.
 name: anime-recommender
 
 services:
@@ -57,6 +57,10 @@ services:
     image: anime-api:latest
     container_name: anime-migrate
     command: ["alembic", "upgrade", "head"]
+    # One-shot: runs alembic and exits. It inherits the api image's HEALTHCHECK,
+    # which probes /health that migrate never serves, so it showed "unhealthy".
+    healthcheck:
+      disable: true
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-anime}:${POSTGRES_PASSWORD:-anime}@postgres:5432/${POSTGRES_DB:-anime}
     depends_on:
@@ -86,7 +90,7 @@ services:
       AWS_SECRET_ACCESS_KEY: test
       AWS_DEFAULT_REGION: us-east-1
       # Self-hosted venue (D4b): same localhost-leak problem as Langfuse below.
-      # .env carries http://localhost:8001/v1 for a HOST-run API (make dev-api).
+      # .env carries http://localhost:1021/v1 (vLLM; SGLang is 1020) for a HOST-run API (make dev-api).
       # Inside this container localhost is the container, so the venue would be
       # unreachable and EVERY request would silently fall through to the hosted
       # chain - working, but never using the GPU you started.
@@ -94,15 +98,37 @@ services:
       # identical whether vLLM or SGLang is running. Resolves only when a venue
       # container is up; when it is not, the fall-through is the correct answer.
       LLM_VENUE_URL: ${LLM_VENUE_URL_DOCKER:-http://anime-venue:8000/v1}
+      # Which LLM this container uses is chosen by the make target, not by .env:
+      #   make up -> false (Groq / OpenAI) · make up-vllm / make up-sglang -> true
+      # Interpolated from VENUE_ROUTING, a name .env does NOT define, on purpose:
+      # env_file above already carries LLM_VENUE_ROUTING_ENABLED, and interpolating
+      # that same name would read .env too — .env would silently decide for every
+      # command. .env's value now only affects a host-run api (make dev-api).
+      # A bare `docker compose up` without make gets false: hosted only.
+      LLM_VENUE_ROUTING_ENABLED: ${VENUE_ROUTING:-false}
       # Langfuse: override BOTH host vars so env_file localhost URLs don't leak in.
       # Langfuse Python SDK v2+ reads LANGFUSE_BASE_URL; LANGFUSE_HOST is the alias.
       # Resolves only when the obs tier is up (see header note).
       LANGFUSE_HOST: http://langfuse-web:3000
       LANGFUSE_BASE_URL: http://langfuse-web:3000
       # OTel: default TRUE (safe — no collector unless obs is up).
-      # Set OTEL_SDK_DISABLED=false in .env when running `make obs` to enable tracing.
+      # Set OTEL_SDK_DISABLED=false in .env when running `make up-obs` to enable tracing.
       OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-true}
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+    # Overrides the image HEALTHCHECK's start period only (same probe). On this host
+    # the api needs ~105 s from container start to "Application startup complete"
+    # (reranker load). The image allows start_period 20s + 3 x 15s ~ 65 s, so the api
+    # was marked unhealthy while still loading; web waits on api: service_healthy,
+    # and `make up` failed (2026-09-14) although the api came up a minute later.
+    # Failures inside start_period do not count; start_interval probes every 5 s
+    # during it, so the api turns healthy within seconds of being ready.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0) if urllib.request.urlopen('http://localhost:8000/health', timeout=4).status==200 else sys.exit(1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 180s
+      start_interval: 5s
     ports:
       - "${API_PORT:-1005}:8000"
     depends_on:
@@ -116,11 +142,7 @@ services:
       context: ../../apps/web
       dockerfile: Dockerfile
       args:
-        # NEXT_PUBLIC_* is inlined at BUILD time — pass the Clerk publishable key
-        # as a build arg (from your shell env / .env). Falls back to empty.
-        NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:-}
-        # Browser-facing origin. Baked in for metadataBase (OG tags).
-        NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL:-http://localhost:${WEB_PORT:-1006}}
+        # The only build input left. The Clerk key and site URL are runtime env below (R2).
         # Billing checkout stub (UI redesign 3D) — build-time; false = preview.
         NEXT_PUBLIC_BILLING_ENABLED: ${NEXT_PUBLIC_BILLING_ENABLED:-false}
     image: anime-web:latest
@@ -130,10 +152,12 @@ services:
       # name, not localhost. CLERK_SECRET_KEY is server-only (runtime env).
       API_BASE_URL: http://api:8000
       CLERK_SECRET_KEY: ${CLERK_SECRET_KEY:-}
-      NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:-}
-      # Read at RUNTIME by the auth middleware to build Clerk return URLs against
-      # a browser-reachable origin (not the container's internal 0.0.0.0:3000).
-      NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL:-http://localhost:${WEB_PORT:-1006}}
+      # Read per request by src/lib/runtime-config.ts, so one image serves every
+      # environment (Phase 6, R2). .env keeps the NEXT_PUBLIC_* names that `pnpm dev`
+      # reads; they are mapped to the runtime names here. SITE_URL is the browser-facing
+      # origin the middleware uses for Clerk return URLs (not the 0.0.0.0:3000 bind).
+      CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:-}
+      SITE_URL: ${NEXT_PUBLIC_SITE_URL:-http://localhost:${WEB_PORT:-1006}}
     ports:
       - "${WEB_PORT:-1006}:3000"
     depends_on:
@@ -156,6 +180,7 @@ services:
       # the LLM today; this is here so that when it does, it does not quietly
       # inherit a URL that points at itself.
       LLM_VENUE_URL: ${LLM_VENUE_URL_DOCKER:-http://anime-venue:8000/v1}
+      LLM_VENUE_ROUTING_ENABLED: ${VENUE_ROUTING:-false} # chosen by the make target — see api
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-anime}:${POSTGRES_PASSWORD:-anime}@postgres:5432/${POSTGRES_DB:-anime}
       REDIS_URL: ${REDIS_URL_DOCKER:-redis://redis:6379/0}
       AWS_ENDPOINT_URL: http://localstack:4566

@@ -1,15 +1,21 @@
 #!/usr/bin/env bash
 # scripts/venue/up_sglang.sh — start the local SGLang venue (S20.3).
 #
-# Deliberate twin of up_vllm.sh. Same model, same weights volume, same port,
-# same effective memory budget and context length — so that bench_venue.py
-# measures the ENGINE and nothing else. If you change a knob here, change the
-# matching knob in up_vllm.sh or the S20.6 comparison is void.
+# Twin of up_vllm.sh: same model, weights volume and context length, so that
+# bench_venue.py measures the ENGINE. The Makefile passes both scripts the same
+# VENUE_CONTEXT_LEN; if you change a default here, change it in up_vllm.sh too.
+# Host ports differ (SGLang 1020, vLLM 1021); inside the container both use 8000.
 #
-# Parameter parity with vLLM:
-#   vLLM --gpu-memory-utilization 0.90  <->  SGLang --mem-fraction-static 0.90
-#   vLLM --max-model-len 4096           <->  SGLang --context-length 4096
+# Flag mapping to vLLM:
 #   vLLM model as positional arg        <->  SGLang --model-path
+#   vLLM --max-model-len 8192           <->  SGLang --context-length 8192
+#   vLLM --gpu-memory-utilization 0.90  vs   SGLang --mem-fraction-static 0.70
+#
+# The memory flags are NOT equivalent; S20 treated 0.90 <-> 0.90 as parity, and
+# that was wrong (corrected 2026-09-14). SGLang's fraction is a share of the
+# card's TOTAL VRAM and sets the KV cache. Measured here: 0.50 gave a 1,618-token
+# cache and rejected prompts over 1,612 tokens; 0.90 gave 83,721 tokens but left
+# 0.37 GB for the Windows desktop. 0.70 is the middle - see the Makefile.
 #
 # Prefix caching is left at each engine's DEFAULT (SGLang RadixAttention on,
 # vLLM automatic prefix caching on). Disabling one to "be fair" would measure
@@ -19,12 +25,15 @@
 # command is supplied as CMD. The image sets no HF_* env vars, so the weights
 # volume mounts at the default /root/.cache/huggingface and is reused as-is.
 #
-# ONE ENGINE AT A TIME — a 12 GB card holds exactly one 7B model. Run
-# `bash scripts/venue/down_venue.sh` before starting the other engine.
+# ONE ENGINE AT A TIME — a 12 GB card holds exactly one 7B model. `make
+# venue-up-sglang` and `make up-sglang` stop vLLM first; when running this
+# script directly, run `bash scripts/venue/down_venue.sh vllm` before it.
 #
 # Usage:
 #   bash scripts/venue/up_sglang.sh
-#   bash scripts/venue/up_sglang.sh --mem-frac 0.80 --context-len 2048
+#   bash scripts/venue/up_sglang.sh --mem-frac 0.65 --context-len 4096
+#   bash scripts/venue/up_sglang.sh --wait 1800  # readiness wait; default 300 s
+#                                                # (measured here: 363-1,118 s)
 #   bash scripts/venue/up_sglang.sh --help
 #
 # Exit codes:
@@ -38,9 +47,9 @@ CONTAINER=anime-sglang
 IMAGE=lmsysorg/sglang:latest
 VOLUME=vllm-hf-cache
 MODEL=Qwen/Qwen2.5-7B-Instruct-AWQ
-PORT=8001
-MEM_FRAC=0.90
-CONTEXT_LEN=4096
+PORT=1020
+MEM_FRAC=0.70
+CONTEXT_LEN=8192
 WAIT_SECS=300
 
 while [[ $# -gt 0 ]]; do
@@ -48,10 +57,12 @@ while [[ $# -gt 0 ]]; do
         --mem-frac)    MEM_FRAC="$2";    shift 2 ;;
         --context-len) CONTEXT_LEN="$2"; shift 2 ;;
         --port)        PORT="$2";        shift 2 ;;
+        --wait)        WAIT_SECS="$2";   shift 2 ;;
         -h|--help)     sed -n '2,/^$/p' "$0" | sed 's/^# \?//'; exit 0 ;;
         *) echo "unknown arg: $1" >&2; exit 2 ;;
     esac
 done
+[[ "$WAIT_SECS" =~ ^[0-9]+$ ]] || { echo "--wait needs whole seconds, got: $WAIT_SECS" >&2; exit 2; }
 
 cd "$(dirname "$0")/../.."
 
@@ -70,7 +81,7 @@ if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
 fi
 echo "  OK    image $IMAGE present"
 
-# Refuse to start alongside vLLM: both would claim ~90% of a 12 GB card.
+# Refuse to start alongside vLLM: two copies of a 7B model do not fit a 12 GB card.
 if docker ps --filter "name=^anime-vllm$" --format '{{.Names}}' | grep -q .; then
     cat >&2 <<EOF
 FAIL  anime-vllm is still running. One engine at a time — a 12 GB card
@@ -103,7 +114,7 @@ if [[ -z "$HF_TOKEN" && -f .env ]]; then
 fi
 
 # ─── Compose network attach ──────────────────────────────────────────────────
-# A containerised API cannot reach the venue on localhost:8001 — inside that
+# A containerised API cannot reach the venue on localhost:${PORT} — inside that
 # container `localhost` IS the container. This is the same class of bug the
 # compose file already guards against for Langfuse ("override BOTH host vars so
 # env_file localhost URLs don't leak in").
@@ -123,7 +134,7 @@ else
     cat >&2 <<EOF
   WARN  compose network '$COMPOSE_NET' not found — starting on the default
         bridge. A HOST-run API (make dev-api) reaches the venue fine on
-        localhost. A CONTAINERISED API (make app) will NOT, and will silently
+        localhost. A CONTAINERISED API (make up-app) will NOT, and will silently
         fall through to the hosted chain. Start the app tier first, or run the
         API on the host.
 EOF
@@ -134,7 +145,15 @@ fi
 if docker ps --filter "name=^${CONTAINER}$" --format '{{.Names}}' | grep -q .; then
     echo
     echo "  Container '${CONTAINER}' is already running."
+    # Started before the app network existed (e.g. `make venue-up-sglang`, then
+    # `make up-sglang`), it sits on the default bridge: "already running" is true and
+    # the containerised api still silently falls back to the hosted LLM. Attach it.
+    if [[ ${#NET_ARGS[@]} -gt 0 ]] && ! docker inspect -f "{{if index .NetworkSettings.Networks \"$COMPOSE_NET\"}}yes{{end}}" "$CONTAINER" | grep -q yes; then
+        docker network connect --alias anime-venue "$COMPOSE_NET" "$CONTAINER"
+        echo "  OK    attached the running container to $COMPOSE_NET as 'anime-venue'"
+    fi
     echo "  Endpoint: http://localhost:${PORT}/v1"
+    echo "  To restart: make venue-down-sglang venue-up-sglang"
     exit 0
 fi
 docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
@@ -144,52 +163,47 @@ echo
 echo "─── starting SGLang ────────────────────────────────────────────"
 echo "  model:       $MODEL"
 echo "  port:        $PORT"
-echo "  mem-frac:    $MEM_FRAC   (parity with vLLM gpu-util)"
+echo "  mem-frac:    $MEM_FRAC   (share of TOTAL VRAM - see header)"
 echo "  context-len: $CONTEXT_LEN   (parity with vLLM max-model-len)"
 
+# Container port 8000 — the same as vLLM. The app reaches EITHER engine at
+# http://anime-venue:8000/v1 (docker-compose.app.yml). SGLang's default 30000
+# made that URL fail for SGLang only, and a failed venue call does not raise:
+# the api silently fell back to the hosted LLM. Found by `make llm-status`.
 docker run -d \
     --name "$CONTAINER" \
     --gpus all \
     --ipc=host \
     "${NET_ARGS[@]}" \
     --shm-size 16g \
-    -p "${PORT}:30000" \
+    -p "${PORT}:8000" \
     -v "${VOLUME}:/root/.cache/huggingface" \
     ${HF_TOKEN:+-e HF_TOKEN="$HF_TOKEN"} \
     "$IMAGE" \
     python3 -m sglang.launch_server \
     --model-path "$MODEL" \
     --host 0.0.0.0 \
-    --port 30000 \
+    --port 8000 \
     --mem-fraction-static "$MEM_FRAC" \
     --context-length "$CONTEXT_LEN" \
     >/dev/null
 
-echo "  container started; waiting up to ${WAIT_SECS}s for /v1/models…"
+echo "  container started; watching startup (up to ${WAIT_SECS}s)…"
 
-# ─── Wait for readiness ───────────────────────────────────────────────
-for ((i = 0; i < WAIT_SECS; i += 5)); do
-    if curl -sf "http://localhost:${PORT}/v1/models" >/dev/null 2>&1; then
-        echo
-        echo "─── ready ──────────────────────────────────────────────────────"
-        echo "  endpoint: http://localhost:${PORT}/v1"
-        curl -s "http://localhost:${PORT}/v1/models" 2>/dev/null | head -c 300
-        echo
-        echo
-        echo "  next: make venue-bench ENGINE=sglang"
-        exit 0
-    fi
-    if ! docker ps --filter "name=^${CONTAINER}$" --format '{{.Names}}' | grep -q .; then
-        echo >&2
-        echo "FAIL  container exited during startup. Last 40 log lines:" >&2
-        docker logs --tail 40 "$CONTAINER" 2>&1 >&2 || true
-        exit 1
-    fi
-    sleep 5
-    printf '.'
-done
-
-echo >&2
-echo "FAIL  timed out after ${WAIT_SECS}s. Last 40 log lines:" >&2
-docker logs --tail 40 "$CONTAINER" 2>&1 >&2 || true
+# ─── Wait for readiness, showing what the engine is doing ─────────────
+# Phases come from the engine's own log (weights, KV cache, CUDA graphs...), so a
+# slow start is visibly progressing instead of a row of dots. Fails fast on a
+# dead container or out-of-memory; warns when the log goes quiet (L.11).
+# shellcheck source=scripts/venue/_progress.sh
+source "scripts/venue/_progress.sh"
+if watch_startup sglang "$CONTAINER" "$PORT" "$WAIT_SECS"; then
+    echo
+    echo "─── ready ──────────────────────────────────────────────────────"
+    echo "  endpoint: http://localhost:${PORT}/v1"
+    curl -s "http://localhost:${PORT}/v1/models" 2>/dev/null | head -c 300
+    echo
+    echo
+    echo "  next: make venue-bench ENGINE=sglang"
+    exit 0
+fi
 exit 1
