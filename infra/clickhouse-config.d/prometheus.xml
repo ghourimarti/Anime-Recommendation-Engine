@@ -1,0 +1,26 @@
+<clickhouse>
+    <!-- ClickHouse's built-in Prometheus endpoint (Track O).
+
+         Langfuse's trace storage is the one component that can fall behind
+         silently: ingestion keeps accepting spans while merges, parts and
+         memory drift, and the first visible symptom is traces missing from the
+         UI. This exposes ClickHouse's own metrics so a dashboard can show that
+         before it becomes "why is Langfuse empty?".
+
+         Served on a SEPARATE port (9363) from the HTTP (8123) and native (9000)
+         interfaces, so scraping never competes with query traffic and the
+         endpoint needs no credentials. Not published to the host: Prometheus
+         reaches it over the compose network as clickhouse:9363.
+
+         Lives in its own file rather than in cluster.xml because that file is
+         load-bearing for boot (listen_host + Keeper); a syntax error here must
+         not be able to stop ClickHouse from starting at all. -->
+    <prometheus>
+        <endpoint>/metrics</endpoint>
+        <port>9363</port>
+        <metrics>true</metrics>       <!-- current values: connections, queries in flight -->
+        <events>true</events>         <!-- cumulative counters: selects, inserts, merges -->
+        <asynchronous_metrics>true</asynchronous_metrics>  <!-- memory, parts, replica delay -->
+        <errors>true</errors>         <!-- error counts by code -->
+    </prometheus>
+</clickhouse>

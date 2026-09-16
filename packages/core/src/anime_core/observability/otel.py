@@ -95,10 +95,36 @@ DURATION_BUCKETS_SECONDS = (
     1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 7.5, 10.0,
 )  # fmt: skip
 
+# Retrieval confidence is a PROBABILITY in (0, 1), so the seconds buckets above are
+# just as wrong for it as the millisecond defaults are for durations — and worse,
+# because every possible value is <= 1 and would land in the first default bucket
+# ("<= 5"). Measured before fixing: two real requests, both reported only as
+# "<= 5.0", from which the dashboard's percentile panels and the routing-threshold
+# comparison could say nothing at all.
+#
+# The boundaries are tight around 0.731 — the sigmoid of the routing threshold
+# (logit 1.0) — because the question this histogram answers is "how far is live
+# traffic from the routing cutoff", and that needs resolution exactly there.
+CONFIDENCE_BUCKETS = (
+    0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.65, 0.7,
+    0.731, 0.75, 0.8, 0.85, 0.9, 0.95, 0.99,
+)  # fmt: skip
+
 _VIEWS = (
     View(
         instrument_name="anime.http.duration",
         aggregation=ExplicitBucketHistogramAggregation(DURATION_BUCKETS_SECONDS),
+    ),
+    # Same seconds scale as the request duration: retrieval stages run from a
+    # sub-millisecond MMR to a multi-second cross-encoder, and the whole point of
+    # the panel is telling those apart.
+    View(
+        instrument_name="anime.retrieval.stage.duration",
+        aggregation=ExplicitBucketHistogramAggregation(DURATION_BUCKETS_SECONDS),
+    ),
+    View(
+        instrument_name="anime.retrieval.confidence",
+        aggregation=ExplicitBucketHistogramAggregation(CONFIDENCE_BUCKETS),
     ),
 )
 

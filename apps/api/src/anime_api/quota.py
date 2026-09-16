@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 
 from anime_core.cost_meter import CostMeter
 from anime_core.jobs import JobPublisher
+from anime_core.observability.metrics import record_quota_rejection
 from anime_core.quotas import QuotaCounter
 from fastapi import Depends, HTTPException, Request, status
 
@@ -77,6 +78,7 @@ async def enforce_quota(
         now=datetime.now(UTC),
     )
     if result.over_limit:
+        record_quota_rejection(scope="user_daily")
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail=(

@@ -2,21 +2,114 @@
 #
 # The app emits OpenTelemetry metrics via OTLP push to the collector; the
 # collector's `prometheus` exporter re-exposes them at otel-collector:8889.
-# Prometheus scrapes that target here. Grafana then reads Prometheus.
+# Everything else here is scraped directly from the component that owns it:
 #
-#   app (OTLP push) -> otel-collector:8889/metrics -> Prometheus -> Grafana
+#   app (OTLP push) -> otel-collector:8889/metrics ─┐
+#   venue engine, exporters, infra  ────────────────┼-> Prometheus -> Grafana
+#
+# All tiers share the compose project network (`name: anime-recommender`), so
+# every target below resolves by service name — including `anime-venue`, which
+# is a NETWORK ALIAS the venue scripts attach to the running engine container.
+#
+# Targets that are legitimately absent stay DOWN rather than being removed:
+#   anime-venue        down whenever the stack runs in API-LLM mode (`make up`)
+#   data-tier exporters  down when only the obs tier is up (`make up-obs`)
+# A down target is information ("the engine is not running"), not a defect. The
+# "Scrape targets up" panel on the infrastructure dashboard is where you read it.
 
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
+  # Labels attached to every series, so a dashboard can tell environments apart
+  # once these same dashboards are pointed at a cluster.
+  external_labels:
+    stack: local
+    project: anime-recommender
 
 scrape_configs:
-  # The app's metrics, re-exposed by the OTel collector's prometheus exporter.
-  - job_name: otel-collector
+  # ── application ────────────────────────────────────────────────────────────
+  # The app's own OTel metrics (anime_*), re-exposed by the collector.
+  - job_name: app
     static_configs:
       - targets: ["otel-collector:8889"]
+        labels: {component: app}
 
-  # Prometheus scraping itself (useful sanity target; always up).
+  # The collector's OWN health: queue length, dropped/refused spans and metric
+  # points. This is how you find out telemetry is being silently dropped rather
+  # than the app being quiet.
+  - job_name: otel-collector
+    static_configs:
+      - targets: ["otel-collector:8888"]
+        labels: {component: telemetry}
+
+  # ── inference venue (vLLM or SGLang; whichever is running) ─────────────────
+  # Both engines serve OpenAI-compatible traffic on container port 8000 and
+  # expose Prometheus metrics at /metrics: queue depth, KV-cache utilisation,
+  # TTFT/TPOT histograms and token throughput. DOWN in API-LLM mode, by design.
+  - job_name: venue-engine
+    static_configs:
+      - targets: ["anime-venue:8000"]
+        labels: {component: venue}
+
+  # ── databases ──────────────────────────────────────────────────────────────
+  - job_name: postgres-app
+    static_configs:
+      - targets: ["postgres-exporter:9187"]
+        labels: {component: database, database: anime}
+
+  - job_name: postgres-langfuse
+    static_configs:
+      - targets: ["langfuse-postgres-exporter:9187"]
+        labels: {component: database, database: langfuse}
+
+  # ── caches / queues ────────────────────────────────────────────────────────
+  - job_name: redis-app
+    static_configs:
+      - targets: ["redis-exporter:9121"]
+        labels: {component: cache, cache: anime}
+
+  - job_name: redis-langfuse
+    static_configs:
+      - targets: ["langfuse-redis-exporter:9121"]
+        labels: {component: cache, cache: langfuse}
+
+  # ── object storage ─────────────────────────────────────────────────────────
+  # MinIO serves its own metrics; MINIO_PROMETHEUS_AUTH_TYPE=public in the obs
+  # compose makes this endpoint readable without a bearer token (local only).
+  - job_name: minio
+    metrics_path: /minio/v2/metrics/cluster
+    static_configs:
+      - targets: ["minio:9000"]
+        labels: {component: storage}
+
+  # ── trace storage ──────────────────────────────────────────────────────────
+  # Enabled by infra/clickhouse-config.d/prometheus.xml.
+  - job_name: clickhouse
+    static_configs:
+      - targets: ["clickhouse:9363"]
+        labels: {component: trace-store}
+
+  # ── host and containers ────────────────────────────────────────────────────
+  # cAdvisor is per-CONTAINER CPU/memory/IO; node-exporter is the Docker VM
+  # itself. Both exist because this project has already hit host-level slowness
+  # (a 17-minute model load, a 2s pgvector query) that no app metric explains.
+  - job_name: cadvisor
+    static_configs:
+      - targets: ["cadvisor:8080"]
+        labels: {component: containers}
+
+  - job_name: node
+    static_configs:
+      - targets: ["node-exporter:9100"]
+        labels: {component: host}
+
+  # ── the observability stack itself ─────────────────────────────────────────
+  - job_name: grafana
+    static_configs:
+      - targets: ["grafana:3000"]
+        labels: {component: telemetry}
+
   - job_name: prometheus
     static_configs:
       - targets: ["localhost:9090"]
+        labels: {component: telemetry}

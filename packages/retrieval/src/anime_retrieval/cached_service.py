@@ -24,6 +24,7 @@ from collections.abc import AsyncIterator
 from typing import Protocol
 
 from anime_core.caches import ResponseCache
+from anime_core.observability.metrics import record_cache_lookup
 from anime_core.schemas import RecommendationResult
 
 
@@ -50,6 +51,7 @@ class CachedRecommendationService:
 
     async def recommend(self, query: str, *, tenant_id: str | None = None) -> RecommendationResult:
         cached = await self._response.get(tenant=tenant_id, query=query)
+        record_cache_lookup(hit=cached is not None, path="recommend")
         if cached is not None:
             return RecommendationResult.model_validate(cached)
 
@@ -62,6 +64,7 @@ class CachedRecommendationService:
 
     async def astream(self, query: str, *, tenant_id: str | None = None) -> AsyncIterator[str]:
         cached = await self._response.get(tenant=tenant_id, query=query)
+        record_cache_lookup(hit=cached is not None, path="stream")
         if cached is not None:
             result = RecommendationResult.model_validate(cached)
             for rec in result.items:

@@ -69,7 +69,9 @@ export COMPOSE_IGNORE_ORPHANS := true
 DATA_SERVICES := postgres redis localstack redisinsight
 APP_SERVICES  := sqs-init migrate api web worker
 OBS_SERVICES  := otel-collector prometheus grafana clickhouse langfuse-postgres langfuse-redis \
-                 minio minio-create-bucket langfuse-worker langfuse-web
+                 minio minio-create-bucket langfuse-worker langfuse-web \
+                 postgres-exporter langfuse-postgres-exporter redis-exporter \
+                 langfuse-redis-exporter cadvisor node-exporter
 
 # Which LLM the containerised api uses. The mode targets set it (up / up-vllm /
 # up-sglang); a bare `make up-app` is API-only. .env's LLM_VENUE_ROUTING_ENABLED

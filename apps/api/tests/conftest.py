@@ -114,9 +114,27 @@ def quota_counter() -> QuotaCounter:
     return QuotaCounter(InMemoryCache())
 
 
+# Pricing is INJECTED here, never read from the ambient LLM_PRICING env var.
+#
+# Two reasons, and the first one cost a green CI run: CostMeter() with no table
+# reads LLM_PRICING and raises PricingConfigError when it is unset, so on a
+# machine without a .env — every CI runner — all 27 tests that build the `app`
+# fixture error out before their first assertion. Second, a test that reads live
+# rates starts failing the day a provider changes one, which is noise, not signal
+# (packages/core/tests/test_cost_meter.py makes the same argument).
+#
+# "future-model-not-priced" is deliberately absent: test_usage_recording asserts
+# that an unknown model records tokens at cost 0 instead of 500ing.
+TEST_PRICING: dict[str, tuple[Decimal, Decimal]] = {
+    "llama-3.1-8b-instant": (Decimal("0.05"), Decimal("0.08")),
+    "openai/gpt-oss-20b": (Decimal("0.075"), Decimal("0.30")),
+    "gpt-4o-mini": (Decimal("0.15"), Decimal("0.60")),
+}
+
+
 @pytest.fixture
 def cost_meter() -> CostMeter:
-    return CostMeter()
+    return CostMeter(pricing=TEST_PRICING)
 
 
 @pytest.fixture

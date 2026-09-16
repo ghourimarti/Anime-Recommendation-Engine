@@ -84,6 +84,11 @@ local→cloud path (Docker → Helm/EKS → Terraform).
 ![Grafana API overview dashboard](assets/screenshots/grafana.png)
 *Request rate, p95 latency, LLM spend, and per-model cost — OTel → Collector → Prometheus → Grafana.*
 
+Three provisioned dashboards — **overview**, **LLM and venue routing**, **infrastructure** —
+over 13 scrape targets (app, GPU engine, both Postgres, both Redis, MinIO, ClickHouse,
+containers, host, collector). Every panel documents what it means and what to do about it:
+see **[docs/OBSERVABILITY.md](docs/OBSERVABILITY.md)**.
+
 </div>
 
 ---

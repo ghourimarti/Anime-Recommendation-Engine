@@ -81,6 +81,7 @@ services:
       - "${OTEL_GRPC_PORT:-1014}:4317"  # OTLP gRPC — the app exports here
       - "${OTEL_HTTP_PORT:-1015}:4318"  # OTLP HTTP — kept open for curl-based debugging
       - "${OTEL_PROM_PORT:-1017}:8889"  # Prometheus metrics — scraped by Prometheus
+      - "${OTEL_SELF_PORT:-1028}:8888"  # the collector's OWN telemetry (Track O)
 
   prometheus:
     # Scrapes the OTel collector's prometheus exporter (otel-collector:8889) and
@@ -219,6 +220,9 @@ services:
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minio}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-miniosecret}
+      # Track O: serve /minio/v2/metrics/cluster without a bearer token so
+      # Prometheus can scrape it. Local dev only — never on a public endpoint.
+      MINIO_PROMETHEUS_AUTH_TYPE: public
     volumes:
       - minio-data:/data
     ports:
@@ -242,6 +246,108 @@ services:
       mc mb --ignore-existing local/langfuse &&
       echo 'bucket langfuse ready'
       "
+
+  # ── exporters (Track O) ─────────────────────────────────────────────────────
+  # Component-level metrics for the Grafana dashboards. Prometheus finds these by
+  # service name (infra/observability/prometheus.yml); the published host ports are
+  # for eyeballing raw output while debugging a panel.
+  #
+  # Pinned by DIGEST, like the MinIO mirror: a moved tag must not silently change
+  # what runs here. The two database/cache exporters live in the obs tier but read
+  # the DATA tier, so with `make up-obs` alone they retry until the data tier is up
+  # and their Prometheus targets show DOWN. That is honest, not broken.
+
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.16.0@sha256:6999a7657e2f2fb0ca6ebf417213eebf6dc7d21b30708c622f6fcb11183a2bb0
+    container_name: anime-postgres-exporter
+    environment:
+      DATA_SOURCE_NAME: postgresql://${POSTGRES_USER:-anime}:${POSTGRES_PASSWORD:-anime}@postgres:5432/${POSTGRES_DB:-anime}?sslmode=disable
+    ports:
+      - "${POSTGRES_EXPORTER_PORT:-1022}:9187"
+
+  langfuse-postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.16.0@sha256:6999a7657e2f2fb0ca6ebf417213eebf6dc7d21b30708c622f6fcb11183a2bb0
+    container_name: anime-langfuse-postgres-exporter
+    environment:
+      DATA_SOURCE_NAME: postgresql://${LANGFUSE_DB_USER:-langfuse}:${LANGFUSE_DB_PASSWORD:-langfuse}@langfuse-postgres:5432/${LANGFUSE_DB_NAME:-langfuse}?sslmode=disable
+    ports:
+      - "${LANGFUSE_POSTGRES_EXPORTER_PORT:-1023}:9187"
+
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.67.0@sha256:120f7ec77293459ccfdad66bb1db75ab72e8bfeab99f58b1cc2564cadcd7a9e7
+    container_name: anime-redis-exporter
+    environment:
+      REDIS_ADDR: redis://redis:6379
+      # Empty unless REDIS_EXTRA_ARGS sets --requirepass in the data tier.
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+    ports:
+      - "${REDIS_EXPORTER_PORT:-1024}:9121"
+
+  langfuse-redis-exporter:
+    image: oliver006/redis_exporter:v1.67.0@sha256:120f7ec77293459ccfdad66bb1db75ab72e8bfeab99f58b1cc2564cadcd7a9e7
+    container_name: anime-langfuse-redis-exporter
+    environment:
+      REDIS_ADDR: redis://langfuse-redis:6379
+      # Passed as env, not argv: argv is visible in `docker inspect` and `ps`.
+      REDIS_PASSWORD: ${LANGFUSE_REDIS_AUTH:-langfuse}
+    ports:
+      - "${LANGFUSE_REDIS_EXPORTER_PORT:-1025}:9121"
+
+  cadvisor:
+    # Per-CONTAINER cpu/memory/io. Needs the host mounts below to read cgroups;
+    # on Docker Desktop these resolve inside the WSL2 VM, not Windows.
+    image: gcr.io/cadvisor/cadvisor:v0.49.1@sha256:3cde6faf0791ebf7b41d6f8ae7145466fed712ea6f252c935294d2608b1af388
+    container_name: anime-cadvisor
+    command:
+      - --housekeeping_interval=10s
+      # docker_only=false on purpose: this host runs Docker Desktop with the
+      # CONTAINERD image store, so /var/lib/docker/image has no layerdb and
+      # cAdvisor's docker driver cannot identify a single container ("failed to
+      # identify the read-write layer ID") — it then reports only the root
+      # cgroup. Raw cgroup collection still yields per-container CPU, memory
+      # and network, labelled id=/docker/<container-id> instead of name=<name>.
+      # The dashboards select on id and print whichever label exists, so they
+      # work unchanged on a host where the docker driver does work (turn off
+      # "Use containerd for pulling and storing images" to get friendly names).
+      - --docker_only=false
+      - --store_container_labels=false
+      # Docker Desktop does not expose the read-write layer metadata cAdvisor
+      # wants (image/overlayfs/layerdb/mounts/<id>/mount-id is absent), and the
+      # failed lookup drops EVERY per-container series, leaving only the root
+      # cgroup. Those collectors only feed disk metrics, which node-exporter
+      # already covers at the VM level, so turning them off restores CPU,
+      # memory and network per container.
+      - --disable_metrics=disk,diskIO,tcp,udp,percpu,sched,process,hugetlb,referenced_memory,resctrl,cpu_topology,advtcp,memory_numa,cpuset
+    privileged: true
+    devices:
+      - /dev/kmsg
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    ports:
+      - "${CADVISOR_PORT:-1026}:8080"
+
+  node-exporter:
+    # The Docker VM itself: cpu, load, memory pressure, disk io, filesystem.
+    # This host has produced a 17-minute model load and a 2,039 ms pgvector query
+    # that no application metric could explain — this is where that shows up.
+    image: prom/node-exporter:v1.8.2@sha256:4032c6d5bfd752342c3e631c2f1de93ba6b86c41db6b167b9a35372c139e7706
+    container_name: anime-node-exporter
+    command:
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --path.rootfs=/rootfs
+      - --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)
+    pid: host
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    ports:
+      - "${NODE_EXPORTER_PORT:-1027}:9100"
 
 volumes:
   clickhouse-data: {}

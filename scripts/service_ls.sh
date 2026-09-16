@@ -175,9 +175,31 @@ creds "login $(env_get LANGFUSE_INIT_USER_EMAIL admin@anime.local) | password $(
 creds "API keys: public $(env_get LANGFUSE_PUBLIC_KEY '(unset)') | secret $(env_get LANGFUSE_SECRET_KEY '(unset)')"
 row "Grafana (dashboards)" "$(status_of anime-grafana)" "http://localhost:${GRAFANA_PORT}"
 creds "login $(env_get GRAFANA_ADMIN_USER admin) | password $(env_get GRAFANA_ADMIN_PASSWORD admin)"
+creds "dashboards: overview (api-overview) | LLM and venue routing (anime-llm-venue) | Infrastructure (anime-infra)"
 row "Prometheus (metrics)" "$(status_of anime-prometheus)" "http://localhost:${PROMETHEUS_PORT}/targets  (no auth)"
 row "OTel Collector" "$(status_of anime-otel-collector)" "gRPC localhost:${OTEL_GRPC_PORT} | HTTP http://localhost:${OTEL_HTTP_PORT}"
-more "metrics export http://localhost:${OTEL_PROM_PORT}/metrics"
+more "metrics export http://localhost:${OTEL_PROM_PORT}/metrics | self telemetry http://localhost:$(env_get OTEL_SELF_PORT 1028)/metrics"
+
+# ─── exporters ───────────────────────────────────────────────────────────────
+# Prometheus scrapes these by service name over the compose network; the host
+# ports exist so you can read the raw output when a dashboard panel looks wrong.
+section "METRIC EXPORTERS (scraped by Prometheus)"
+row "Postgres exporter (app)" "$(status_of anime-postgres-exporter)" "http://localhost:$(env_get POSTGRES_EXPORTER_PORT 1022)/metrics"
+row "Postgres exporter (Langfuse)" "$(status_of anime-langfuse-postgres-exporter)" "http://localhost:$(env_get LANGFUSE_POSTGRES_EXPORTER_PORT 1023)/metrics"
+row "Redis exporter (app)" "$(status_of anime-redis-exporter)" "http://localhost:$(env_get REDIS_EXPORTER_PORT 1024)/metrics"
+row "Redis exporter (Langfuse)" "$(status_of anime-langfuse-redis-exporter)" "http://localhost:$(env_get LANGFUSE_REDIS_EXPORTER_PORT 1025)/metrics"
+row "cAdvisor (containers)" "$(status_of anime-cadvisor)" "http://localhost:$(env_get CADVISOR_PORT 1026)/metrics"
+more "aggregate only on Docker Desktop's containerd store - see the dashboard note"
+row "node-exporter (Docker VM)" "$(status_of anime-node-exporter)" "http://localhost:$(env_get NODE_EXPORTER_PORT 1027)/metrics"
+row "ClickHouse metrics" "$(status_of anime-langfuse-clickhouse)" "clickhouse:9363/metrics  (compose network only)"
+# Whichever engine is up owns the scrape target; the container names differ but
+# both answer on the anime-venue alias that Prometheus scrapes.
+venue_st=$(status_of anime-vllm); venue_port=${VLLM_PORT}; venue_name="vLLM"
+if [[ ! $venue_st =~ ^(up|healthy)$ ]]; then
+    sg_st=$(status_of anime-sglang)
+    [[ $sg_st =~ ^(up|healthy)$ ]] && { venue_st=$sg_st; venue_port=${SGLANG_PORT}; venue_name="SGLang"; }
+fi
+row "Venue engine metrics ($venue_name)" "$venue_st" "http://localhost:${venue_port}/metrics  (scraped as anime-venue:8000)"
 
 echo
 if [[ $MODE == urls ]]; then

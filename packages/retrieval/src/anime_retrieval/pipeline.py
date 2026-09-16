@@ -17,9 +17,11 @@ import asyncio
 import dataclasses
 import logging
 import os
+import time
 
 from anime_core.db.models import AnimeChunk as ORMChunk
 from anime_core.embedder import Embedder
+from anime_core.observability.metrics import record_retrieval_stage
 from anime_core.vector_index import PgvectorIndex
 from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -117,7 +119,9 @@ class RetrievalPipeline:
         tenant_id: str | None = None,
     ) -> list[Candidate]:
         # 1) Embed the query once; reused for hybrid retrieval AND MMR relevance.
+        started = time.perf_counter()
         query_embedding = (await self._embedder.embed([query])).embeddings[0]
+        record_retrieval_stage(stage="embed", seconds=time.perf_counter() - started)
 
         # 2) Hybrid retrieval (dense + sparse → RRF) — top hybrid_k chunks.
         hybrid_candidates = await self._hybrid.retrieve(
@@ -135,6 +139,7 @@ class RetrievalPipeline:
         # the event loop) with a timeout. On failure/timeout, skip reranking and keep
         # the hybrid order — degraded relevance beats a failed request.
         if deduped:
+            started = time.perf_counter()
             try:
                 rerank_scores = await asyncio.wait_for(
                     asyncio.to_thread(self._reranker.score, query, [c.text for c in deduped]),
@@ -146,7 +151,16 @@ class RetrievalPipeline:
                 ]
                 reranked.sort(key=lambda c: c.rerank_score or 0.0, reverse=True)
                 top_reranked = reranked[: self._rerank_k]
-            except Exception:
+                record_retrieval_stage(stage="rerank", seconds=time.perf_counter() - started)
+            except Exception as exc:
+                # THE routing signal: no rerank score means no confidence, which
+                # means should_use_venue() fails safe to the hosted chain. Before
+                # this line, that only existed as a log message (see L.15).
+                record_retrieval_stage(
+                    stage="rerank",
+                    seconds=time.perf_counter() - started,
+                    outcome="timeout" if isinstance(exc, TimeoutError) else "error",
+                )
                 logger.warning("reranker failed/timed out; falling back to hybrid order")
                 top_reranked = deduped[: self._rerank_k]
         else:
@@ -162,6 +176,7 @@ class RetrievalPipeline:
         aligned = [c for c in top_reranked if c.key in emb_map]
 
         # 6) MMR → final_k. Assign final rank position.
+        started = time.perf_counter()
         final = mmr_select(
             aligned,
             query_embedding,
@@ -169,4 +184,5 @@ class RetrievalPipeline:
             k=self._final_k,
             lambda_=self._mmr_lambda,
         )
+        record_retrieval_stage(stage="mmr", seconds=time.perf_counter() - started)
         return [dataclasses.replace(c, rank=i + 1) for i, c in enumerate(final)]

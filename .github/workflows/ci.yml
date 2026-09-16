@@ -127,6 +127,18 @@ jobs:
 
       - run: uv sync --frozen --all-packages
 
+      # scripts/audit/deps.py audits BOTH ecosystems: pip-audit for Python and
+      # `pnpm audit` for apps/web. Without pnpm on PATH the Node half cannot run,
+      # and the script fails closed ("an audit that could not run is NOT a pass"),
+      # so the whole job failed while reporting nothing about Node at all.
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: apps/web/package.json
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
       - name: Secret scan
         run: uv run python scripts/audit/secrets.py
 

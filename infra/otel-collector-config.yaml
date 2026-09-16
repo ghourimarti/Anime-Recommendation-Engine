@@ -53,6 +53,12 @@ exporters:
       enabled: true
 
 service:
+  # The collector's OWN health (Track O): queue length, and refused/dropped
+  # spans and metric points. Without this, telemetry can be silently dropped
+  # and the dashboards would read it as "the app went quiet".
+  telemetry:
+    metrics:
+      address: 0.0.0.0:8888
   pipelines:
     traces:
       receivers: [otlp]

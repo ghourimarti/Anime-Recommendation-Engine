@@ -184,6 +184,29 @@ def test_duration_buckets_are_on_a_seconds_scale() -> None:
     assert list(b) == sorted(b), "bucket boundaries must be ascending"
 
 
+def test_confidence_buckets_are_on_a_probability_scale() -> None:
+    """Retrieval confidence is a probability, and its buckets must resolve one.
+
+    Same failure as the duration histogram, found the same way — by reading the
+    exported data instead of the dashboard. Under the default boundaries every
+    confidence value (all of them <= 1) fell into the single "<= 5" bucket, so the
+    percentile panels and the comparison against the routing threshold were
+    computed from a distribution with exactly one cell. They would have rendered a
+    confident line meaning nothing.
+
+    0.731 is the sigmoid of the routing threshold (logit 1.0): the histogram exists
+    to answer how far live traffic sits from that cutoff, so it needs a boundary
+    AT it and resolution around it.
+    """
+    from anime_core.observability.otel import CONFIDENCE_BUCKETS as b
+
+    assert max(b) < 1.0, "a probability cannot exceed 1: buckets above it are dead space"
+    assert min(b) <= 0.05, "no resolution at the low end: confident and hopeless look alike"
+    assert 0.731 in b, "no boundary at the routing threshold — the key comparison is uninterpolated"
+    assert sum(1 for x in b if 0.6 <= x <= 0.9) >= 5, "too coarse around the routing decision"
+    assert list(b) == sorted(b), "bucket boundaries must be ascending"
+
+
 def test_health_probes_are_excluded_from_tracing() -> None:
     """Probe endpoints must emit NO span.
 

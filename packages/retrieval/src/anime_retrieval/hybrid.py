@@ -13,10 +13,12 @@ standard from Cormack et al. 2009).
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from anime_core.embedder import Embedder
+from anime_core.observability.metrics import record_retrieval_stage
 from anime_core.resilience import AsyncCircuitBreaker, RetrievalUnavailableError, guarded
 from anime_core.vector_index import VectorIndex, VectorMatch
 
@@ -135,6 +137,7 @@ class HybridRetriever:
         sparse_hits: list[BM25Match] = []
         dense_ok = sparse_ok = False
 
+        started = time.perf_counter()
         try:
             dense_hits = await guarded(
                 lambda: self._vector.search(query_embedding, k=k, tenant_id=tenant_id),
@@ -142,10 +145,19 @@ class HybridRetriever:
                 timeout_seconds=self._timeout,
             )
             dense_ok = True
-        except Exception:
+            record_retrieval_stage(stage="dense", seconds=time.perf_counter() - started)
+        except Exception as exc:
+            # A failed leg still cost time — record it, or a dependency that burns
+            # the full timeout on every request looks free on the dashboard.
+            record_retrieval_stage(
+                stage="dense",
+                seconds=time.perf_counter() - started,
+                outcome="timeout" if isinstance(exc, TimeoutError) else "error",
+            )
             logger.warning("dense (pgvector) retrieval failed; falling back to sparse-only")
             await self._recover_after_failed_leg()
 
+        started = time.perf_counter()
         try:
             sparse_hits = await guarded(
                 lambda: self._bm25.search(query, k=k, tenant_id=tenant_id),
@@ -153,7 +165,13 @@ class HybridRetriever:
                 timeout_seconds=self._timeout,
             )
             sparse_ok = True
-        except Exception:
+            record_retrieval_stage(stage="sparse", seconds=time.perf_counter() - started)
+        except Exception as exc:
+            record_retrieval_stage(
+                stage="sparse",
+                seconds=time.perf_counter() - started,
+                outcome="timeout" if isinstance(exc, TimeoutError) else "error",
+            )
             logger.warning("sparse (FTS) retrieval failed")
             await self._recover_after_failed_leg()
 

@@ -28,6 +28,8 @@ from tenacity import (
     wait_exponential_jitter,
 )
 
+from anime_core.observability.metrics import record_circuit_transition
+
 logger = logging.getLogger(__name__)
 
 
@@ -80,6 +82,7 @@ class AsyncCircuitBreaker:
             and (time.monotonic() - self._opened_at) >= self._reset_timeout
         ):
             self._state = CircuitState.HALF_OPEN
+            record_circuit_transition(breaker=self.name, state=CircuitState.HALF_OPEN.value)
         return self._state
 
     async def call[T](self, func: Callable[[], Awaitable[T]]) -> T:
@@ -95,13 +98,20 @@ class AsyncCircuitBreaker:
 
     def _on_success(self) -> None:
         self._failures = 0
+        # Only a CHANGE is a transition: every healthy call lands here, and a
+        # counter that ticks once per success would drown the signal it exists for.
+        if self._state is not CircuitState.CLOSED:
+            record_circuit_transition(breaker=self.name, state=CircuitState.CLOSED.value)
         self._state = CircuitState.CLOSED
 
     def _on_failure(self) -> None:
         self._failures += 1
         if self._failures >= self._fail_max:
+            was_open = self._state is CircuitState.OPEN
             self._state = CircuitState.OPEN
             self._opened_at = time.monotonic()
+            if not was_open:
+                record_circuit_transition(breaker=self.name, state=CircuitState.OPEN.value)
             logger.warning("circuit %s opened after %d failures", self.name, self._failures)
 
 

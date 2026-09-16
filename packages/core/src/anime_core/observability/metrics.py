@@ -213,3 +213,92 @@ def record_job(*, queue: str, outcome: str) -> None:
 def record_poison_message(*, queue: str) -> None:
     """Record an unparseable message. Alert on any sustained non-zero rate."""
     _poison_messages.add(1, {"queue": queue})
+
+
+# ── response cache ───────────────────────────────────────────────────────────
+# Hit rate is the difference between a cheap product and an expensive one: every
+# hit skips an embed, a retrieval round trip and an LLM call. It was also
+# invisible — the cache decided the cost of most requests and reported nothing,
+# so a silently broken cache (wrong key, dead Redis, TTL of zero) would look
+# exactly like "traffic got more expensive".
+_cache_lookups = _meter.create_counter(
+    "anime.cache.lookups",
+    unit="1",
+    description=(
+        "Response-cache lookups by result (hit/miss) and path (recommend/stream). "
+        "hits / (hits + misses) is the hit rate. A hit rate that falls without a "
+        "traffic change means the key or the cache itself broke, not that users "
+        "started asking new questions."
+    ),
+)
+
+
+def record_cache_lookup(*, hit: bool, path: str = "recommend") -> None:
+    """Record one response-cache lookup."""
+    _cache_lookups.add(1, {"result": "hit" if hit else "miss", "path": path})
+
+
+# ── retrieval stages ────────────────────────────────────────────────────────
+# "The request took 5s" is not actionable; "rerank took 4.8s of it" is. This
+# histogram exists because a real failure needed it: on 2026-09-16 every venue
+# routing decision came out "hosted", and the cause was the reranker missing its
+# 2s budget — which produces NO confidence score, which fails safe to the hosted
+# chain. Correct behaviour, invisible cause: the only trace of it was a log line.
+# With this, "reranker timing out" is a panel instead of an investigation.
+_retrieval_stage = _meter.create_histogram(
+    "anime.retrieval.stage.duration",
+    unit="s",
+    description=(
+        "Per-stage retrieval latency in seconds, by stage (embed/dense/sparse/"
+        "rerank/mmr) and outcome (ok/timeout/error). Stages that fail or time out "
+        "are STILL recorded, with the time they burned before giving up — a "
+        "degraded stage that costs its full budget every request is the expensive "
+        "kind of working."
+    ),
+)
+
+
+def record_retrieval_stage(*, stage: str, seconds: float, outcome: str = "ok") -> None:
+    """Record one retrieval stage's duration and how it ended."""
+    _retrieval_stage.record(seconds, {"stage": stage, "outcome": outcome})
+
+
+# ── circuit breakers ────────────────────────────────────────────────────────
+# A breaker opening is the system protecting itself, and it is also the moment a
+# dependency stopped working. Transitions rather than a gauge: a gauge sampled
+# every 15s misses a breaker that opens and closes between scrapes, and the
+# thing you need to alert on is "did this flap", not "is it open right now".
+_circuit_transitions = _meter.create_counter(
+    "anime.circuit.transitions",
+    unit="1",
+    description=(
+        "Circuit-breaker state changes, by breaker (pgvector/bm25_fts/…) and the "
+        "state entered (open/half_open/closed). Any transition to open means that "
+        "dependency started failing; a repeating open→half_open→open cycle means "
+        "it never recovered and the fallback has been carrying the product."
+    ),
+)
+
+
+def record_circuit_transition(*, breaker: str, state: str) -> None:
+    """Record one breaker state change. Called only on an actual change."""
+    _circuit_transitions.add(1, {"breaker": breaker, "state": state})
+
+
+# ── quota ─────────────────────────────────────────────────────────────────
+# 429s are visible in the HTTP metrics, but not WHY — and "users are hitting the
+# free-tier cap" and "one user is hammering us" need different responses.
+_quota_rejections = _meter.create_counter(
+    "anime.quota.rejections",
+    unit="1",
+    description=(
+        "Requests refused by a quota, by scope. Rising steadily = the free-tier "
+        "limit is now the product's ceiling, which is a pricing decision, not an "
+        "incident."
+    ),
+)
+
+
+def record_quota_rejection(*, scope: str) -> None:
+    """Record one quota refusal (the 429 path)."""
+    _quota_rejections.add(1, {"scope": scope})
