@@ -215,6 +215,6 @@ def test_metrics_and_traces_exclude_the_same_paths() -> None:
 
     traced_exclusions = {p.strip() for p in DEFAULT_EXCLUDED_URLS.split(",")}
     metric_exclusions = {p.lstrip("/") for p in EXCLUDED_PATHS}
-    assert (
-        traced_exclusions == metric_exclusions
-    ), f"trace exclusions {traced_exclusions} != metric exclusions {metric_exclusions}"
+    assert traced_exclusions == metric_exclusions, (
+        f"trace exclusions {traced_exclusions} != metric exclusions {metric_exclusions}"
+    )

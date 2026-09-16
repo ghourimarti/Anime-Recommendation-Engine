@@ -63,7 +63,9 @@ def main() -> int:
         same = a.get(key) == b.get(key)
         if not same:
             drift.append(key)
-        print(f"  [{'OK ' if same else 'DIFF'}] {key:<24} {args.a}={a.get(key)}  {args.b}={b.get(key)}")
+        print(
+            f"  [{'OK ' if same else 'DIFF'}] {key:<24} {args.a}={a.get(key)}  {args.b}={b.get(key)}"
+        )
 
     # Free VRAM is reported but NOT treated as controlled: S19 established it
     # does not predict performance on a WDDM host (the clean run had less free

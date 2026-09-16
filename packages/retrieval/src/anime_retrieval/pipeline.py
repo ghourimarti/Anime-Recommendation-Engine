@@ -101,6 +101,9 @@ class RetrievalPipeline:
             vector_index=PgvectorIndex(session),
             bm25_index=PostgresBM25Index(session),
             embedder=embedder,
+            # Both legs share this session (and so does the route's history write);
+            # a failed leg must roll it back before anything else runs on it.
+            on_leg_failure=session.rollback,
         )
         self._hybrid_k = hybrid_k
         self._rerank_k = rerank_k

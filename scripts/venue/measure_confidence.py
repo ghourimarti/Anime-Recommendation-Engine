@@ -88,7 +88,9 @@ async def measure(rows: list[dict], *, rerank_timeout: float) -> list[dict]:
         # and every cancelled wait_for leaves an orphaned scoring thread that
         # contends for CPU - so the failures cascade and we would measure
         # nothing at all. Production keeps 2.0s; this is measurement scaffolding.
-        pipeline = RetrievalPipeline(session=session, embedder=embedder, rerank_timeout=rerank_timeout)
+        pipeline = RetrievalPipeline(
+            session=session, embedder=embedder, rerank_timeout=rerank_timeout
+        )
 
         # Warm the reranker so query #1 is not paying model-load cost.
         print("  warming reranker (loading cross-encoder weights)...")
@@ -119,7 +121,7 @@ async def measure(rows: list[dict], *, rerank_timeout: float) -> list[dict]:
                 }
             )
             mark = f"{top1:+.4f}" if top1 is not None else "  none "
-            print(f"  [{i:>3}/{len(rows)}] {row.get('query_type','?'):<12} {mark}  {query[:52]}")
+            print(f"  [{i:>3}/{len(rows)}] {row.get('query_type', '?'):<12} {mark}  {query[:52]}")
     return out
 
 

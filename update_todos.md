@@ -1,6 +1,6 @@
 # Update Todos (complete)
 
-**Totals: 117 done · 40 pending · 9 in progress · 0 blocked · 6 phases complete (0–5)**
+**Totals: 118 done · 40 pending · 8 in progress · 0 blocked · 6 phases complete (0–5)**
 
 ## PHASE 0: Recon ✅ 3/3
 - ✅ P0.1 Read repo, map stack
@@ -105,7 +105,7 @@
   - ✅ P5.5.4 log retention
   - ✅ P5.5.5 RTBF
 
-## PHASE 6: Release Packaging 🔄 3/12
+## PHASE 6: Release Packaging 🔄 4/12
 - ✅ P6.1 base-images.lock
   - ✅ P6.1a stdin bug under make
 - 🔄 P6.2 dual registry
@@ -121,7 +121,7 @@
   - ✅ 7c EKS NetworkPolicy
   - ✅ 7d ApplicationSet regression
   - ✅ 7e docs
-- 🔄 P6.8 make package + RELEASE.md
+- ✅ P6.8 make package + RELEASE.md
 - ✅ P6.9 render-verify
   - ✅ 9a pipefail
   - ✅ 9b offline schemas

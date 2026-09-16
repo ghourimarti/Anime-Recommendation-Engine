@@ -84,7 +84,11 @@ PLACEHOLDER_MARKERS: tuple[str, ...] = (
     "replaceme",
     "<your",
     "REDACTED",
-    "ci-build-no-real-tenant",  # ci.yml fake publishable key
+    "ci-build-no-real-tenant",  # ci.yml fake publishable key (old)
+    # ci.yml CI build key: pk_test_ + base64("example.clerk.accounts.dev$"). The word
+    # "example" sits inside the base64 where the marker above cannot see it, and the
+    # scan also reads git history, so allowlisting the literal is the only fix.
+    "ZXhhbXBsZS5jbGVyay5hY2NvdW50cy5kZXYk",
 )
 
 # Paths to skip entirely (relative to repo root or as path components).

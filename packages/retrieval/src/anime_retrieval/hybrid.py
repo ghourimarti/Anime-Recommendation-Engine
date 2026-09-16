@@ -13,6 +13,7 @@ standard from Cormack et al. 2009).
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from anime_core.embedder import Embedder
@@ -83,16 +84,32 @@ class HybridRetriever:
         embedder: Embedder,
         rrf_k: int = 60,
         timeout_seconds: float = 2.0,
+        on_leg_failure: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self._vector = vector_index
         self._bm25 = bm25_index
         self._embedder = embedder
         self._rrf_k = rrf_k
         self._timeout = timeout_seconds
+        # Both legs run on the caller's DB session. A leg cancelled by its timeout
+        # mid-query leaves that session's transaction invalid, and every later
+        # statement on it (the other leg, then the route's history write) raises
+        # PendingRollbackError. The pipeline passes session.rollback here so a failed
+        # leg degrades the request instead of turning it into a 500.
+        self._on_leg_failure = on_leg_failure
         # One breaker per retrieval leg so a flapping pgvector doesn't keep being
         # hammered — it fast-fails and we run sparse-only until it recovers.
         self._dense_breaker = AsyncCircuitBreaker(name="pgvector")
         self._sparse_breaker = AsyncCircuitBreaker(name="bm25_fts")
+
+    async def _recover_after_failed_leg(self) -> None:
+        """Run the caller's recovery hook. A failing hook must not mask the fallback."""
+        if self._on_leg_failure is None:
+            return
+        try:
+            await self._on_leg_failure()
+        except Exception:
+            logger.warning("session recovery after a failed retrieval leg failed", exc_info=True)
 
     async def retrieve(
         self,
@@ -127,6 +144,7 @@ class HybridRetriever:
             dense_ok = True
         except Exception:
             logger.warning("dense (pgvector) retrieval failed; falling back to sparse-only")
+            await self._recover_after_failed_leg()
 
         try:
             sparse_hits = await guarded(
@@ -137,6 +155,7 @@ class HybridRetriever:
             sparse_ok = True
         except Exception:
             logger.warning("sparse (FTS) retrieval failed")
+            await self._recover_after_failed_leg()
 
         if not dense_ok and not sparse_ok:
             raise RetrievalUnavailableError("both dense and sparse retrieval failed")

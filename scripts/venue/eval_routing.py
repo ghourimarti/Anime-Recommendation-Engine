@@ -70,9 +70,7 @@ OUT_DIR = REPO_ROOT / "Documents" / "docs" / "venue-bench"
 
 def load_golden(limit: int | None) -> list[dict]:
     rows = [
-        json.loads(line)
-        for line in GOLDEN.read_text(encoding="utf-8").splitlines()
-        if line.strip()
+        json.loads(line) for line in GOLDEN.read_text(encoding="utf-8").splitlines() if line.strip()
     ]
     return rows[:limit] if limit else rows
 
@@ -208,14 +206,18 @@ def compare(off_a: list[dict], off_b: list[dict], on: list[dict]) -> dict[str, A
 
     print()
     print("=== NOISE FLOOR (off vs off - identical config, so this is provider noise) ===")
-    print(f"  recommendation set changed      {len(noise['eligible_changed']) + len(noise['ineligible_changed'])}/{n}")
+    print(
+        f"  recommendation set changed      {len(noise['eligible_changed']) + len(noise['ineligible_changed'])}/{n}"
+    )
     print(f"    of which below threshold      {len(noise['ineligible_changed'])}")
     print(f"  refusal flips                   {len(noise['refusal_flips'])}")
     print(f"  fewer grounded items            {len(noise['lost_items'])}")
 
     print()
     print("=== ROUTING EFFECT (off vs on) ===")
-    print(f"  recommendation set changed      {len(effect['eligible_changed']) + len(effect['ineligible_changed'])}/{n}")
+    print(
+        f"  recommendation set changed      {len(effect['eligible_changed']) + len(effect['ineligible_changed'])}/{n}"
+    )
     print(f"    of which below threshold      {len(effect['ineligible_changed'])}")
     print(f"  refusal flips                   {len(effect['refusal_flips'])}")
     print(f"  fewer grounded items            {len(effect['lost_items'])}")

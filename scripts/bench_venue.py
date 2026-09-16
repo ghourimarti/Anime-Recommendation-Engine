@@ -40,7 +40,7 @@ import subprocess
 import sys
 import time
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 try:
@@ -140,9 +140,9 @@ def one_run(
                 continue
 
             # Prefer the server's own count when it sends one.
-            if usage := chunk.get("usage"):
-                if (completion := usage.get("completion_tokens")) is not None:
-                    usage_tokens = completion
+            usage = chunk.get("usage") or {}
+            if (completion := usage.get("completion_tokens")) is not None:
+                usage_tokens = completion
 
             for choice in chunk.get("choices", []):
                 content = (choice.get("delta") or {}).get("content")
@@ -326,7 +326,7 @@ def main() -> int:
         "engine": args.engine,
         "model": args.model,
         "endpoint": args.url,
-        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "timestamp_utc": datetime.now(UTC).isoformat(),
         "runs_measured": len(results),
         "runs_warmup": args.warmup,
         "runs_failed": failures,
@@ -339,7 +339,7 @@ def main() -> int:
     }
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     out_path = args.out_dir / f"{args.engine}-{stamp}.json"
     out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     print(f"\nresults: {out_path.relative_to(REPO_ROOT)}")
