@@ -126,6 +126,17 @@ _VIEWS = (
         instrument_name="anime.retrieval.confidence",
         aggregation=ExplicitBucketHistogramAggregation(CONFIDENCE_BUCKETS),
     ),
+    # Provider latency and TTFT are seconds like the request duration, and they
+    # span the same range: a cached-prefix GPU reply and a cold hosted call are
+    # two orders of magnitude apart.
+    View(
+        instrument_name="anime.llm.duration",
+        aggregation=ExplicitBucketHistogramAggregation(DURATION_BUCKETS_SECONDS),
+    ),
+    View(
+        instrument_name="anime.llm.ttft",
+        aggregation=ExplicitBucketHistogramAggregation(DURATION_BUCKETS_SECONDS),
+    ),
 )
 
 

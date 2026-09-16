@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from collections.abc import AsyncIterator, Callable
 from typing import Any, Protocol, cast
 
@@ -27,6 +28,7 @@ from langchain_groq import ChatGroq
 from langchain_openai import ChatOpenAI
 
 from anime_core.cost_meter import LAST_USAGE, TokenUsage
+from anime_core.observability.metrics import record_llm_duration, record_llm_ttft
 from anime_core.prompts import RECOMMEND_PROMPT, STREAM_PROMPT
 from anime_core.resilience import AsyncCircuitBreaker, BudgetExceededError, guarded
 from anime_core.schemas import Recommendations
@@ -174,6 +176,22 @@ class _LangChainClient:
         return config
 
     async def recommend(self, *, query: str, context: str) -> Recommendations:
+        # Timed here rather than in the route: this is the only place that knows
+        # WHICH model ran. Every provider — vLLM, SGLang, Groq, OpenAI — reaches
+        # the network through this method.
+        started = time.perf_counter()
+        try:
+            return await self._recommend(query=query, context=context)
+        except Exception:
+            record_llm_duration(
+                model=self._model_name,
+                seconds=time.perf_counter() - started,
+                outcome="error",
+            )
+            raise
+
+    async def _recommend(self, *, query: str, context: str) -> Recommendations:
+        started = time.perf_counter()
         # `include_raw=True` surfaces both the parsed structured output AND the
         # underlying AIMessage with usage_metadata. We need the latter to record
         # per-tenant cost without weaving callbacks through every
@@ -210,13 +228,22 @@ class _LangChainClient:
                 output_tokens=int(usage_meta.get("output_tokens", 0)),
             )
         )
+        record_llm_duration(model=self._model_name, seconds=time.perf_counter() - started)
         return cast(Recommendations, parsed)
 
     async def astream(self, *, query: str, context: str) -> AsyncIterator[str]:
         chain = STREAM_PROMPT | self._chat | StrOutputParser()
+        started = time.perf_counter()
+        first = True
         async for token in chain.astream(
             {"query": query, "context": context}, config=self._invoke_config()
         ):
+            if first:
+                # Time to FIRST token: the number a streaming user actually feels.
+                # Recorded once, before yielding, so a consumer that abandons the
+                # stream still contributes the measurement it already caused.
+                record_llm_ttft(model=self._model_name, seconds=time.perf_counter() - started)
+                first = False
             yield token
 
 

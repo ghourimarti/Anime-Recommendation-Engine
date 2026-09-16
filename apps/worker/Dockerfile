@@ -50,6 +50,23 @@ ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONDONTWRITEBYTECODE=1 \
     WORKER_QUEUE=feedback
 
+# Security patches on top of the pinned base (P6.4 gate).
+#
+# The base is pinned by digest for reproducibility, but Debian publishes CVE
+# fixes faster than the upstream uv image is rebuilt with them. Measured with
+# the release's own Trivy policy (fixable HIGH/CRITICAL) against the newest
+# available base: 20 findings in libgnutls30, openssl/libssl3, libpcre2-8-0 and
+# libcap2 — every one already fixed in the Debian repo. `make base-images-refresh`
+# reported no change, so waiting for upstream would block the release instead.
+#
+# The trade-off is explicit: the image is no longer a pure function of the base
+# digest, because the apt snapshot moves. What ships is still auditable — the
+# release records the built digest in release/images.lock and attaches an SBOM,
+# so the exact package set of any released image is recoverable after the fact.
+RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN groupadd --gid 10001 app \
     && useradd --uid 10001 --gid app --no-create-home --shell /usr/sbin/nologin app
 

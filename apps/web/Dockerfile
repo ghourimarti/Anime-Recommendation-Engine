@@ -53,6 +53,17 @@ ENV NODE_ENV=production \
     PORT=3000 \
     HOSTNAME=0.0.0.0
 
+# Same reasoning as the Python images: Alpine has already fixed the base's
+# libcrypto3/libssl3 CVEs, but the node image has not been rebuilt with them.
+RUN apk upgrade --no-cache
+
+# Drop the bundled npm CLI. Nothing at runtime uses it — pnpm does the build and
+# the container runs `node server.js` — and it vendors its own dependency tree,
+# which accounted for most of this image's remaining Trivy findings
+# (brace-expansion, ip-address, pacote). Removing it closes those and makes the
+# runtime smaller, with no runtime capability lost.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
+
 # node:alpine ships a built-in non-root `node` user (UID 1000) — use it.
 # standalone output bundles a minimal server.js + the traced node_modules.
 COPY --from=builder --chown=node:node /app/.next/standalone ./

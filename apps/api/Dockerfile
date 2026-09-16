@@ -69,6 +69,23 @@ ENV PATH="/app/.venv/bin:$PATH" \
     HF_HUB_CACHE=/app/.cache/huggingface/hub \
     SENTENCE_TRANSFORMERS_HOME=/app/.cache/sentence-transformers
 
+# Security patches on top of the pinned base (P6.4 gate).
+#
+# The base is pinned by digest for reproducibility, but Debian publishes CVE
+# fixes faster than the upstream uv image is rebuilt with them. Measured with
+# the release's own Trivy policy (fixable HIGH/CRITICAL) against the newest
+# available base: 20 findings in libgnutls30, openssl/libssl3, libpcre2-8-0 and
+# libcap2 — every one already fixed in the Debian repo. `make base-images-refresh`
+# reported no change, so waiting for upstream would block the release instead.
+#
+# The trade-off is explicit: the image is no longer a pure function of the base
+# digest, because the apt snapshot moves. What ships is still auditable — the
+# release records the built digest in release/images.lock and attaches an SBOM,
+# so the exact package set of any released image is recoverable after the fact.
+RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/*
+
 # Non-root user — required for K8s "restricted" PodSecurity and a
 # smaller CVE blast radius. UID 10001 is well outside the host's user range.
 RUN groupadd --gid 10001 app \

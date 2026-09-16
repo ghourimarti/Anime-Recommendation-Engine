@@ -109,8 +109,24 @@ scanned or signed; that happens only in CI.
 - **`cd.yml` also runs on every `vX.Y.Z` tag** and fails at *Assume AWS role* until the
   AWS infrastructure exists (decision G5=C). Expected, and a recorded Phase 9 blocker:
   that workflow still builds its own ECR images, so EKS would not run these digests yet.
-- **The first release may fail the Trivy gate** on a fixable HIGH vulnerability in a base
-  image. That is the gate working: bump `base-images.lock` (`make base-images-refresh`)
-  in its own commit and tag again.
+- **If the Trivy gate fails on a base-image CVE**, first try `make base-images-refresh` —
+  usually upstream has already rebuilt the image and a new digest closes it.
+  **When that reports no change, the fix is already in the Dockerfiles:** the runtime
+  stages run `apt-get upgrade` (api, worker) and `apk upgrade` (web), because the distros
+  ship CVE fixes faster than the `uv` and `node` images are rebuilt with them. Measured
+  on 2026-09-16: 33 fixable HIGH/CRITICAL findings across the three images with the lock
+  already current, and zero after the upgrade step. The cost of that step is that an image
+  is no longer a pure function of its pinned base digest; `release/images.lock` plus the
+  SBOM attestation keep what actually shipped auditable.
+- **Pre-flight the gate before tagging** rather than discovering it in CI — it is the same
+  scanner and the same policy:
+  ```bash
+  make package VERSION=0.0.0-preflight
+  docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.74.0 \
+    image --timeout 20m --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed \
+    anime-recommender/api:0.0.0-preflight
+  ```
+  The api image is ~2.8 GB and exceeds Trivy's default scan timeout, which surfaces as
+  `context deadline exceeded` rather than as a vulnerability — hence `--timeout 20m`.
 - **Signing steps are only exercised by a real tag.** A dry run cannot prove them; watch
   the first published run.

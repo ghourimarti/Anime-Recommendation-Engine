@@ -302,3 +302,43 @@ _quota_rejections = _meter.create_counter(
 def record_quota_rejection(*, scope: str) -> None:
     """Record one quota refusal (the 429 path)."""
     _quota_rejections.add(1, {"scope": scope})
+
+
+# ── per-provider LLM latency ──────────────────────────────────────────────────
+# Cost and tokens were already attributed per model; time was not. Without it
+# "the GPU is slower than Groq" is an opinion, and the routing decision — which
+# trades a hosted provider for a self-hosted one — cannot be judged on latency at
+# all. The OTel HTTP client instrumentation does not help: on this stack it emits
+# no peer/host label, so every provider's calls land in one undifferentiated
+# series.
+_llm_duration = _meter.create_histogram(
+    "anime.llm.duration",
+    unit="s",
+    description=(
+        "End-to-end LLM call latency in seconds, by model and outcome (ok/error). "
+        "One series per model means the self-hosted venue and each hosted tier are "
+        "directly comparable, which is the measurement the routing threshold is "
+        "ultimately traded against. Failed calls are recorded too, with the time "
+        "they burned before failing."
+    ),
+)
+_llm_ttft = _meter.create_histogram(
+    "anime.llm.ttft",
+    unit="s",
+    description=(
+        "Time to FIRST streamed token, in seconds, by model. This is what a user "
+        'experiences as "did it hear me" — a request can have excellent total '
+        "latency and still feel broken if the first token is slow. Streaming path "
+        "only; a non-streaming call cannot measure it."
+    ),
+)
+
+
+def record_llm_duration(*, model: str, seconds: float, outcome: str = "ok") -> None:
+    """Record one LLM call's wall time and how it ended."""
+    _llm_duration.record(seconds, {"model": model, "outcome": outcome})
+
+
+def record_llm_ttft(*, model: str, seconds: float) -> None:
+    """Record time to first streamed token. Called once per stream, on token 1."""
+    _llm_ttft.record(seconds, {"model": model})

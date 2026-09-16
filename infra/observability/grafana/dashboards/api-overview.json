@@ -856,8 +856,8 @@
     },
     {
       "type": "timeseries",
-      "title": "Outbound provider latency p95",
-      "description": "Time spent waiting on somebody else's API (OpenAI, Groq, Clerk), by host. Rules out 'is it us or them' in one glance.",
+      "title": "LLM latency p95 by model",
+      "description": "Time inside each model's call, measured at the shared provider seam. This replaces a by-host breakdown of outbound HTTP: the OTel client instrumentation on this stack emits no peer label, so every provider's calls landed in one undifferentiated series and the panel could never answer 'is it us or them'. Per-provider detail is in the collapsible sections below.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -865,8 +865,8 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.95, sum by (le, net_peer_name) (rate(http_client_duration_milliseconds_bucket{service_name=~\"$service\"}[5m])))",
-          "legendFormat": "{{net_peer_name}}",
+          "expr": "histogram_quantile(0.95, sum by (le, model) (rate(anime_llm_duration_seconds_bucket[10m])))",
+          "legendFormat": "{{model}}",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -875,7 +875,7 @@
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "ms",
+          "unit": "s",
           "custom": {
             "drawStyle": "line",
             "lineWidth": 1,
@@ -1194,13 +1194,3008 @@
     },
     {
       "type": "row",
-      "title": "6 - Is anything underneath broken?",
+      "title": "5a - vLLM (self-hosted GPU)",
       "id": 25,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
         "y": 54
+      },
+      "collapsed": true,
+      "panels": [
+        {
+          "type": "stat",
+          "title": "vLLM - calls / sec",
+          "description": "Requests this provider answered. Zero means routing never chose it \u2014 which for the venue rows is the normal case when retrieval confidence sits below the threshold. Both self-hosted engines serve the SAME model name, so these app-level panels cannot tell vLLM from SGLang; the engine panels in this row can.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(rate(anime_llm_calls_total{model=~\"Qwen.*\"}[5m])) or vector(0)",
+              "legendFormat": "",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              },
+              "mappings": [],
+              "decimals": 3
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "textMode": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "text": {
+              "valueSize": 28
+            }
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 0,
+            "y": 55
+          },
+          "id": 26
+        },
+        {
+          "type": "stat",
+          "title": "vLLM - request p95",
+          "description": "95th percentile of the full call, measured at the one seam every provider passes through. Both self-hosted engines serve the SAME model name, so these app-level panels cannot tell vLLM from SGLang; the engine panels in this row can.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "histogram_quantile(0.95, sum by (le) (rate(anime_llm_duration_seconds_bucket{model=~\"Qwen.*\"}[10m])))",
+              "legendFormat": "",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              },
+              "mappings": [],
+              "decimals": 2
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "textMode": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "text": {
+              "valueSize": 28
+            }
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 4,
+            "y": 55
+          },
+          "id": 27
+        },
+        {
+          "type": "stat",
+          "title": "vLLM - TTFT p50",
+          "description": "Median time to first streamed token: what a user feels as 'did it hear me'. Streaming requests only \u2014 a non-streaming call cannot measure it. Both self-hosted engines serve the SAME model name, so these app-level panels cannot tell vLLM from SGLang; the engine panels in this row can.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "histogram_quantile(0.50, sum by (le) (rate(anime_llm_ttft_seconds_bucket{model=~\"Qwen.*\"}[10m])))",
+              "legendFormat": "",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              },
+              "mappings": [],
+              "decimals": 2
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "textMode": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "text": {
+              "valueSize": 28
+            }
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 8,
+            "y": 55
+          },
+          "id": 28
+        },
+        {
+          "type": "stat",
+          "title": "vLLM - TTFT p95",
+          "description": "Tail time to first token. Both self-hosted engines serve the SAME model name, so these app-level panels cannot tell vLLM from SGLang; the engine panels in this row can.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "histogram_quantile(0.95, sum by (le) (rate(anime_llm_ttft_seconds_bucket{model=~\"Qwen.*\"}[10m])))",
+              "legendFormat": "",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              },
+              "mappings": [],
+              "decimals": 2
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "textMode": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "text": {
+              "valueSize": 28
+            }
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 12,
+            "y": 55
+          },
+          "id": 29
+        },
+        {
+          "type": "stat",
+          "title": "vLLM - cost / request",
+          "description": "Metered spend divided by calls over 30m. The self-hosted venue meters at $0 by construction, which is the whole economic argument for routing to it. Both self-hosted engines serve the SAME model name, so these app-level panels cannot tell vLLM from SGLang; the engine panels in this row can.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "(sum(rate(anime_llm_cost_usd_total{model=~\"Qwen.*\"}[30m])) or vector(0)) / clamp_min(sum(rate(anime_llm_calls_total{model=~\"Qwen.*\"}[30m])) or vector(0), 0.0001)",
+              "legendFormat": "",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "currencyUSD",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              },
+              "mappings": [],
+              "decimals": 5
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "textMode": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "text": {
+              "valueSize": 28
+            }
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 16,
+            "y": 55
+          },
+          "id": 30
+        },
+        {
+          "type": "stat",
+          "title": "vLLM - error rate",
+          "description": "Share of this provider's calls that failed and fell through to the next tier. A provider can be 'up' and still be failing every structured-output parse. Both self-hosted engines serve the SAME model name, so these app-level panels cannot tell vLLM from SGLang; the engine panels in this row can.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "100 * (sum(rate(anime_llm_duration_seconds_count{model=~\"Qwen.*\",outcome=\"error\"}[15m])) or vector(0)) / clamp_min(sum(rate(anime_llm_duration_seconds_count{model=~\"Qwen.*\"}[15m])) or vector(0), 0.001)",
+              "legendFormat": "",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "orange",
+                    "value": 1
+                  },
+                  {
+                    "color": "red",
+                    "value": 5
+                  }
+                ]
+              },
+              "mappings": [],
+              "decimals": 1
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "textMode": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "text": {
+              "valueSize": 28
+            }
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 20,
+            "y": 55
+          },
+          "id": 31
+        },
+        {
+          "type": "timeseries",
+          "title": "vLLM - latency percentiles",
+          "description": "p50/p95/p99 for this provider alone. Comparing these rows against each other is how you judge whether routing to the GPU actually pays off. Both self-hosted engines serve the SAME model name, so these app-level panels cannot tell vLLM from SGLang; the engine panels in this row can.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "histogram_quantile(0.50, sum by (le) (rate(anime_llm_duration_seconds_bucket{model=~\"Qwen.*\"}[10m])))",
+              "legendFormat": "p50",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "refId": "B",
+              "expr": "histogram_quantile(0.95, sum by (le) (rate(anime_llm_duration_seconds_bucket{model=~\"Qwen.*\"}[10m])))",
+              "legendFormat": "p95",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "refId": "C",
+              "expr": "histogram_quantile(0.99, sum by (le) (rate(anime_llm_duration_seconds_bucket{model=~\"Qwen.*\"}[10m])))",
+              "legendFormat": "p99",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": true
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 60
+          },
+          "id": 32
+        },
+        {
+          "type": "timeseries",
+          "title": "vLLM - tokens / sec",
+          "description": "Input vs output tokens for this provider. Output is the expensive half almost everywhere, and it is what the venue's decode rate has to keep up with. Both self-hosted engines serve the SAME model name, so these app-level panels cannot tell vLLM from SGLang; the engine panels in this row can.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by (direction) (rate(anime_llm_tokens_total{model=~\"Qwen.*\"}[5m]))",
+              "legendFormat": "{{direction}}",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": true
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 60
+          },
+          "id": 33
+        },
+        {
+          "type": "stat",
+          "title": "vLLM - engine up",
+          "description": "1 = vLLM is running and scrapeable. 0 is normal in API-LLM mode (make up) and whenever SGLang holds the GPU instead \u2014 only one engine can.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "max(up{job=\"venue-engine\"}) or vector(0)",
+              "legendFormat": "",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": null
+                  },
+                  {
+                    "color": "green",
+                    "value": 1
+                  }
+                ]
+              },
+              "mappings": []
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "textMode": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "text": {
+              "valueSize": 28
+            }
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 0,
+            "y": 68
+          },
+          "id": 34
+        },
+        {
+          "type": "stat",
+          "title": "vLLM - requests running",
+          "description": "Sequences the engine is decoding right now.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(vllm:num_requests_running) or vector(0)",
+              "legendFormat": "",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              },
+              "mappings": []
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "textMode": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "text": {
+              "valueSize": 28
+            }
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 4,
+            "y": 68
+          },
+          "id": 35
+        },
+        {
+          "type": "stat",
+          "title": "vLLM - requests waiting",
+          "description": "Queued behind the running batch. Sustained non-zero means the GPU is the bottleneck, not the app.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(vllm:num_requests_waiting) or vector(0)",
+              "legendFormat": "",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "orange",
+                    "value": 1
+                  },
+                  {
+                    "color": "red",
+                    "value": 5
+                  }
+                ]
+              },
+              "mappings": []
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "textMode": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "text": {
+              "valueSize": 28
+            }
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 8,
+            "y": 68
+          },
+          "id": 36
+        },
+        {
+          "type": "stat",
+          "title": "vLLM - KV cache used",
+          "description": "Share of the paged KV cache in use. Near 100% and new requests queue; this is what --gpu-memory-utilization actually buys.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "100 * (max(vllm:kv_cache_usage_perc) or vector(0))",
+              "legendFormat": "",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "orange",
+                    "value": 80
+                  },
+                  {
+                    "color": "red",
+                    "value": 95
+                  }
+                ]
+              },
+              "mappings": [],
+              "decimals": 1
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "textMode": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "text": {
+              "valueSize": 28
+            }
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 12,
+            "y": 68
+          },
+          "id": 37
+        },
+        {
+          "type": "stat",
+          "title": "vLLM - engine TTFT p95",
+          "description": "Time to first token as the ENGINE measures it, excluding network and app overhead. The gap against the app-level TTFT above is what the round trip costs.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm:time_to_first_token_seconds_bucket[10m])))",
+              "legendFormat": "",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              },
+              "mappings": [],
+              "decimals": 2
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "textMode": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "text": {
+              "valueSize": 28
+            }
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 16,
+            "y": 68
+          },
+          "id": 38
+        },
+        {
+          "type": "stat",
+          "title": "vLLM - engine TPOT p95",
+          "description": "Time per output token after the first \u2014 the decode rate a reader experiences as speed.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm:request_time_per_output_token_seconds_bucket[10m])))",
+              "legendFormat": "",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              },
+              "mappings": [],
+              "decimals": 3
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "textMode": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "text": {
+              "valueSize": 28
+            }
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 20,
+            "y": 68
+          },
+          "id": 39
+        },
+        {
+          "type": "timeseries",
+          "title": "vLLM - engine throughput",
+          "description": "Prompt tokens are prefill work; generation tokens are decode work. Prefill spikes with long contexts, decode scales with answer length.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(rate(vllm:prompt_tokens_total[5m]))",
+              "legendFormat": "prompt tokens/s",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "refId": "B",
+              "expr": "sum(rate(vllm:generation_tokens_total[5m]))",
+              "legendFormat": "generation tokens/s",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": true
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 8,
+            "x": 0,
+            "y": 73
+          },
+          "id": 40
+        },
+        {
+          "type": "timeseries",
+          "title": "vLLM - queue vs end-to-end (p95)",
+          "description": "Queue time separates 'the model is slow' from 'the model is busy'. If queue dominates, add capacity or shed load.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm:request_queue_time_seconds_bucket[10m])))",
+              "legendFormat": "queue p95",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "refId": "B",
+              "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm:e2e_request_latency_seconds_bucket[10m])))",
+              "legendFormat": "engine e2e p95",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": true
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 8,
+            "x": 8,
+            "y": 73
+          },
+          "id": 41
+        },
+        {
+          "type": "timeseries",
+          "title": "vLLM - prefix cache hit rate",
+          "description": "Reused KV blocks across requests. A shared system prompt should keep this high; near zero means every request pays full prefill.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "100 * (sum(rate(vllm:prefix_cache_hits_total[15m])) or vector(0)) / clamp_min(sum(rate(vllm:prefix_cache_queries_total[15m])) or vector(0), 0.001)",
+              "legendFormat": "prefix cache %",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": true
+              },
+              "min": 0,
+              "max": 100
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 8,
+            "x": 16,
+            "y": 73
+          },
+          "id": 42
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "5b - SGLang (self-hosted GPU)",
+      "id": 43,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 80
+      },
+      "collapsed": true,
+      "panels": [
+        {
+          "type": "stat",
+          "title": "SGLang - calls / sec",
+          "description": "Requests this provider answered. Zero means routing never chose it \u2014 which for the venue rows is the normal case when retrieval confidence sits below the threshold. Both self-hosted engines serve the SAME model name, so these app-level panels cannot tell vLLM from SGLang; the engine panels in this row can.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(rate(anime_llm_calls_total{model=~\"Qwen.*\"}[5m])) or vector(0)",
+              "legendFormat": "",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              },
+              "mappings": [],
+              "decimals": 3
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "textMode": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "text": {
+              "valueSize": 28
+            }
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 0,
+            "y": 81
+          },
+          "id": 44
+        },
+        {
+          "type": "stat",
+          "title": "SGLang - request p95",
+          "description": "95th percentile of the full call, measured at the one seam every provider passes through. Both self-hosted engines serve the SAME model name, so these app-level panels cannot tell vLLM from SGLang; the engine panels in this row can.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "histogram_quantile(0.95, sum by (le) (rate(anime_llm_duration_seconds_bucket{model=~\"Qwen.*\"}[10m])))",
+              "legendFormat": "",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              },
+              "mappings": [],
+              "decimals": 2
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "textMode": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "text": {
+              "valueSize": 28
+            }
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 4,
+            "y": 81
+          },
+          "id": 45
+        },
+        {
+          "type": "stat",
+          "title": "SGLang - TTFT p50",
+          "description": "Median time to first streamed token: what a user feels as 'did it hear me'. Streaming requests only \u2014 a non-streaming call cannot measure it. Both self-hosted engines serve the SAME model name, so these app-level panels cannot tell vLLM from SGLang; the engine panels in this row can.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "histogram_quantile(0.50, sum by (le) (rate(anime_llm_ttft_seconds_bucket{model=~\"Qwen.*\"}[10m])))",
+              "legendFormat": "",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              },
+              "mappings": [],
+              "decimals": 2
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "textMode": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "text": {
+              "valueSize": 28
+            }
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 8,
+            "y": 81
+          },
+          "id": 46
+        },
+        {
+          "type": "stat",
+          "title": "SGLang - TTFT p95",
+          "description": "Tail time to first token. Both self-hosted engines serve the SAME model name, so these app-level panels cannot tell vLLM from SGLang; the engine panels in this row can.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "histogram_quantile(0.95, sum by (le) (rate(anime_llm_ttft_seconds_bucket{model=~\"Qwen.*\"}[10m])))",
+              "legendFormat": "",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              },
+              "mappings": [],
+              "decimals": 2
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "textMode": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "text": {
+              "valueSize": 28
+            }
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 12,
+            "y": 81
+          },
+          "id": 47
+        },
+        {
+          "type": "stat",
+          "title": "SGLang - cost / request",
+          "description": "Metered spend divided by calls over 30m. The self-hosted venue meters at $0 by construction, which is the whole economic argument for routing to it. Both self-hosted engines serve the SAME model name, so these app-level panels cannot tell vLLM from SGLang; the engine panels in this row can.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "(sum(rate(anime_llm_cost_usd_total{model=~\"Qwen.*\"}[30m])) or vector(0)) / clamp_min(sum(rate(anime_llm_calls_total{model=~\"Qwen.*\"}[30m])) or vector(0), 0.0001)",
+              "legendFormat": "",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "currencyUSD",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              },
+              "mappings": [],
+              "decimals": 5
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "textMode": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "text": {
+              "valueSize": 28
+            }
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 16,
+            "y": 81
+          },
+          "id": 48
+        },
+        {
+          "type": "stat",
+          "title": "SGLang - error rate",
+          "description": "Share of this provider's calls that failed and fell through to the next tier. A provider can be 'up' and still be failing every structured-output parse. Both self-hosted engines serve the SAME model name, so these app-level panels cannot tell vLLM from SGLang; the engine panels in this row can.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "100 * (sum(rate(anime_llm_duration_seconds_count{model=~\"Qwen.*\",outcome=\"error\"}[15m])) or vector(0)) / clamp_min(sum(rate(anime_llm_duration_seconds_count{model=~\"Qwen.*\"}[15m])) or vector(0), 0.001)",
+              "legendFormat": "",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "orange",
+                    "value": 1
+                  },
+                  {
+                    "color": "red",
+                    "value": 5
+                  }
+                ]
+              },
+              "mappings": [],
+              "decimals": 1
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "textMode": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "text": {
+              "valueSize": 28
+            }
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 20,
+            "y": 81
+          },
+          "id": 49
+        },
+        {
+          "type": "timeseries",
+          "title": "SGLang - latency percentiles",
+          "description": "p50/p95/p99 for this provider alone. Comparing these rows against each other is how you judge whether routing to the GPU actually pays off. Both self-hosted engines serve the SAME model name, so these app-level panels cannot tell vLLM from SGLang; the engine panels in this row can.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "histogram_quantile(0.50, sum by (le) (rate(anime_llm_duration_seconds_bucket{model=~\"Qwen.*\"}[10m])))",
+              "legendFormat": "p50",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "refId": "B",
+              "expr": "histogram_quantile(0.95, sum by (le) (rate(anime_llm_duration_seconds_bucket{model=~\"Qwen.*\"}[10m])))",
+              "legendFormat": "p95",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "refId": "C",
+              "expr": "histogram_quantile(0.99, sum by (le) (rate(anime_llm_duration_seconds_bucket{model=~\"Qwen.*\"}[10m])))",
+              "legendFormat": "p99",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": true
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 86
+          },
+          "id": 50
+        },
+        {
+          "type": "timeseries",
+          "title": "SGLang - tokens / sec",
+          "description": "Input vs output tokens for this provider. Output is the expensive half almost everywhere, and it is what the venue's decode rate has to keep up with. Both self-hosted engines serve the SAME model name, so these app-level panels cannot tell vLLM from SGLang; the engine panels in this row can.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by (direction) (rate(anime_llm_tokens_total{model=~\"Qwen.*\"}[5m]))",
+              "legendFormat": "{{direction}}",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": true
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 86
+          },
+          "id": 51
+        },
+        {
+          "type": "stat",
+          "title": "SGLang - engine up",
+          "description": "1 = SGLang is running and scrapeable. This row and the vLLM row are mutually exclusive by design: one GPU, one engine (make up-sglang / make up-vllm).",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "max(up{job=\"venue-engine\"}) or vector(0)",
+              "legendFormat": "",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": null
+                  },
+                  {
+                    "color": "green",
+                    "value": 1
+                  }
+                ]
+              },
+              "mappings": []
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "textMode": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "text": {
+              "valueSize": 28
+            }
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 0,
+            "y": 94
+          },
+          "id": 52
+        },
+        {
+          "type": "stat",
+          "title": "SGLang - running requests",
+          "description": "Requests the engine is decoding now.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(sglang:num_running_reqs) or vector(0)",
+              "legendFormat": "",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              },
+              "mappings": []
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "textMode": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "text": {
+              "valueSize": 28
+            }
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 4,
+            "y": 94
+          },
+          "id": 53
+        },
+        {
+          "type": "stat",
+          "title": "SGLang - queued requests",
+          "description": "Requests waiting for a slot.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(sglang:num_queue_reqs) or vector(0)",
+              "legendFormat": "",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "orange",
+                    "value": 1
+                  },
+                  {
+                    "color": "red",
+                    "value": 5
+                  }
+                ]
+              },
+              "mappings": []
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "textMode": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "text": {
+              "valueSize": 28
+            }
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 8,
+            "y": 94
+          },
+          "id": 54
+        },
+        {
+          "type": "stat",
+          "title": "SGLang - token pool used",
+          "description": "KV token-pool utilisation. SGLang's --mem-fraction-static is a share of TOTAL VRAM, not of what is free, which is why a fraction that works on an idle card can starve the cache on a busy desktop (measured here: 0.50 gave a 1,618-token cache, 0.70 gave 42,669).",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "100 * (max(sglang:token_usage) or vector(0))",
+              "legendFormat": "",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "orange",
+                    "value": 80
+                  },
+                  {
+                    "color": "red",
+                    "value": 95
+                  }
+                ]
+              },
+              "mappings": [],
+              "decimals": 1
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "textMode": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "text": {
+              "valueSize": 28
+            }
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 12,
+            "y": 94
+          },
+          "id": 55
+        },
+        {
+          "type": "stat",
+          "title": "SGLang - engine TTFT p95",
+          "description": "Time to first token measured inside the engine.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "histogram_quantile(0.95, sum by (le) (rate(sglang:time_to_first_token_seconds_bucket[10m])))",
+              "legendFormat": "",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              },
+              "mappings": [],
+              "decimals": 2
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "textMode": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "text": {
+              "valueSize": 28
+            }
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 16,
+            "y": 94
+          },
+          "id": 56
+        },
+        {
+          "type": "stat",
+          "title": "SGLang - cache hit rate",
+          "description": "RadixAttention prefix reuse across requests.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "100 * (max(sglang:cache_hit_rate) or vector(0))",
+              "legendFormat": "",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              },
+              "mappings": [],
+              "decimals": 1
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "textMode": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "text": {
+              "valueSize": 28
+            }
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 20,
+            "y": 94
+          },
+          "id": 57
+        },
+        {
+          "type": "timeseries",
+          "title": "SGLang - engine throughput",
+          "description": "Prefill and decode token rates reported by SGLang. These series exist only while SGLang is the running engine; the panel is empty under vLLM, which is information, not a fault.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(rate(sglang:prompt_tokens_total[5m]))",
+              "legendFormat": "prompt tokens/s",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "refId": "B",
+              "expr": "sum(rate(sglang:generation_tokens_total[5m]))",
+              "legendFormat": "generation tokens/s",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": true
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 24,
+            "x": 0,
+            "y": 99
+          },
+          "id": 58
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "5c - Groq (hosted)",
+      "id": 59,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 106
+      },
+      "collapsed": true,
+      "panels": [
+        {
+          "type": "stat",
+          "title": "Groq - calls / sec",
+          "description": "Requests this provider answered. Zero means routing never chose it \u2014 which for the venue rows is the normal case when retrieval confidence sits below the threshold. Matched by model name (gpt-oss, llama, mixtral, gemma). This is the tier the app calls whenever retrieval confidence sits below the routing threshold, so in normal operation it carries most traffic.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(rate(anime_llm_calls_total{model=~\"openai/gpt-oss.*|llama.*|mixtral.*|gemma.*\"}[5m])) or vector(0)",
+              "legendFormat": "",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              },
+              "mappings": [],
+              "decimals": 3
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "textMode": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "text": {
+              "valueSize": 28
+            }
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 0,
+            "y": 107
+          },
+          "id": 60
+        },
+        {
+          "type": "stat",
+          "title": "Groq - request p95",
+          "description": "95th percentile of the full call, measured at the one seam every provider passes through. Matched by model name (gpt-oss, llama, mixtral, gemma). This is the tier the app calls whenever retrieval confidence sits below the routing threshold, so in normal operation it carries most traffic.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "histogram_quantile(0.95, sum by (le) (rate(anime_llm_duration_seconds_bucket{model=~\"openai/gpt-oss.*|llama.*|mixtral.*|gemma.*\"}[10m])))",
+              "legendFormat": "",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              },
+              "mappings": [],
+              "decimals": 2
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "textMode": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "text": {
+              "valueSize": 28
+            }
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 4,
+            "y": 107
+          },
+          "id": 61
+        },
+        {
+          "type": "stat",
+          "title": "Groq - TTFT p50",
+          "description": "Median time to first streamed token: what a user feels as 'did it hear me'. Streaming requests only \u2014 a non-streaming call cannot measure it. Matched by model name (gpt-oss, llama, mixtral, gemma). This is the tier the app calls whenever retrieval confidence sits below the routing threshold, so in normal operation it carries most traffic.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "histogram_quantile(0.50, sum by (le) (rate(anime_llm_ttft_seconds_bucket{model=~\"openai/gpt-oss.*|llama.*|mixtral.*|gemma.*\"}[10m])))",
+              "legendFormat": "",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              },
+              "mappings": [],
+              "decimals": 2
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "textMode": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "text": {
+              "valueSize": 28
+            }
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 8,
+            "y": 107
+          },
+          "id": 62
+        },
+        {
+          "type": "stat",
+          "title": "Groq - TTFT p95",
+          "description": "Tail time to first token. Matched by model name (gpt-oss, llama, mixtral, gemma). This is the tier the app calls whenever retrieval confidence sits below the routing threshold, so in normal operation it carries most traffic.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "histogram_quantile(0.95, sum by (le) (rate(anime_llm_ttft_seconds_bucket{model=~\"openai/gpt-oss.*|llama.*|mixtral.*|gemma.*\"}[10m])))",
+              "legendFormat": "",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              },
+              "mappings": [],
+              "decimals": 2
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "textMode": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "text": {
+              "valueSize": 28
+            }
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 12,
+            "y": 107
+          },
+          "id": 63
+        },
+        {
+          "type": "stat",
+          "title": "Groq - cost / request",
+          "description": "Metered spend divided by calls over 30m. The self-hosted venue meters at $0 by construction, which is the whole economic argument for routing to it. Matched by model name (gpt-oss, llama, mixtral, gemma). This is the tier the app calls whenever retrieval confidence sits below the routing threshold, so in normal operation it carries most traffic.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "(sum(rate(anime_llm_cost_usd_total{model=~\"openai/gpt-oss.*|llama.*|mixtral.*|gemma.*\"}[30m])) or vector(0)) / clamp_min(sum(rate(anime_llm_calls_total{model=~\"openai/gpt-oss.*|llama.*|mixtral.*|gemma.*\"}[30m])) or vector(0), 0.0001)",
+              "legendFormat": "",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "currencyUSD",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              },
+              "mappings": [],
+              "decimals": 5
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "textMode": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "text": {
+              "valueSize": 28
+            }
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 16,
+            "y": 107
+          },
+          "id": 64
+        },
+        {
+          "type": "stat",
+          "title": "Groq - error rate",
+          "description": "Share of this provider's calls that failed and fell through to the next tier. A provider can be 'up' and still be failing every structured-output parse. Matched by model name (gpt-oss, llama, mixtral, gemma). This is the tier the app calls whenever retrieval confidence sits below the routing threshold, so in normal operation it carries most traffic.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "100 * (sum(rate(anime_llm_duration_seconds_count{model=~\"openai/gpt-oss.*|llama.*|mixtral.*|gemma.*\",outcome=\"error\"}[15m])) or vector(0)) / clamp_min(sum(rate(anime_llm_duration_seconds_count{model=~\"openai/gpt-oss.*|llama.*|mixtral.*|gemma.*\"}[15m])) or vector(0), 0.001)",
+              "legendFormat": "",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "orange",
+                    "value": 1
+                  },
+                  {
+                    "color": "red",
+                    "value": 5
+                  }
+                ]
+              },
+              "mappings": [],
+              "decimals": 1
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "textMode": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "text": {
+              "valueSize": 28
+            }
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 20,
+            "y": 107
+          },
+          "id": 65
+        },
+        {
+          "type": "timeseries",
+          "title": "Groq - latency percentiles",
+          "description": "p50/p95/p99 for this provider alone. Comparing these rows against each other is how you judge whether routing to the GPU actually pays off. Matched by model name (gpt-oss, llama, mixtral, gemma). This is the tier the app calls whenever retrieval confidence sits below the routing threshold, so in normal operation it carries most traffic.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "histogram_quantile(0.50, sum by (le) (rate(anime_llm_duration_seconds_bucket{model=~\"openai/gpt-oss.*|llama.*|mixtral.*|gemma.*\"}[10m])))",
+              "legendFormat": "p50",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "refId": "B",
+              "expr": "histogram_quantile(0.95, sum by (le) (rate(anime_llm_duration_seconds_bucket{model=~\"openai/gpt-oss.*|llama.*|mixtral.*|gemma.*\"}[10m])))",
+              "legendFormat": "p95",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "refId": "C",
+              "expr": "histogram_quantile(0.99, sum by (le) (rate(anime_llm_duration_seconds_bucket{model=~\"openai/gpt-oss.*|llama.*|mixtral.*|gemma.*\"}[10m])))",
+              "legendFormat": "p99",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": true
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 112
+          },
+          "id": 66
+        },
+        {
+          "type": "timeseries",
+          "title": "Groq - tokens / sec",
+          "description": "Input vs output tokens for this provider. Output is the expensive half almost everywhere, and it is what the venue's decode rate has to keep up with. Matched by model name (gpt-oss, llama, mixtral, gemma). This is the tier the app calls whenever retrieval confidence sits below the routing threshold, so in normal operation it carries most traffic.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by (direction) (rate(anime_llm_tokens_total{model=~\"openai/gpt-oss.*|llama.*|mixtral.*|gemma.*\"}[5m]))",
+              "legendFormat": "{{direction}}",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": true
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 112
+          },
+          "id": 67
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "5d - OpenAI (hosted)",
+      "id": 68,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 120
+      },
+      "collapsed": true,
+      "panels": [
+        {
+          "type": "stat",
+          "title": "OpenAI - calls / sec",
+          "description": "Requests this provider answered. Zero means routing never chose it \u2014 which for the venue rows is the normal case when retrieval confidence sits below the threshold. Matched by model name (gpt-4/5, o-series). The last-resort tier: it only sees traffic when Groq fails, so steady volume here means the primary tier is degrading silently.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(rate(anime_llm_calls_total{model=~\"gpt-4.*|gpt-5.*|o[1-4]-.*|text-.*\"}[5m])) or vector(0)",
+              "legendFormat": "",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              },
+              "mappings": [],
+              "decimals": 3
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "textMode": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "text": {
+              "valueSize": 28
+            }
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 0,
+            "y": 121
+          },
+          "id": 69
+        },
+        {
+          "type": "stat",
+          "title": "OpenAI - request p95",
+          "description": "95th percentile of the full call, measured at the one seam every provider passes through. Matched by model name (gpt-4/5, o-series). The last-resort tier: it only sees traffic when Groq fails, so steady volume here means the primary tier is degrading silently.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "histogram_quantile(0.95, sum by (le) (rate(anime_llm_duration_seconds_bucket{model=~\"gpt-4.*|gpt-5.*|o[1-4]-.*|text-.*\"}[10m])))",
+              "legendFormat": "",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              },
+              "mappings": [],
+              "decimals": 2
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "textMode": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "text": {
+              "valueSize": 28
+            }
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 4,
+            "y": 121
+          },
+          "id": 70
+        },
+        {
+          "type": "stat",
+          "title": "OpenAI - TTFT p50",
+          "description": "Median time to first streamed token: what a user feels as 'did it hear me'. Streaming requests only \u2014 a non-streaming call cannot measure it. Matched by model name (gpt-4/5, o-series). The last-resort tier: it only sees traffic when Groq fails, so steady volume here means the primary tier is degrading silently.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "histogram_quantile(0.50, sum by (le) (rate(anime_llm_ttft_seconds_bucket{model=~\"gpt-4.*|gpt-5.*|o[1-4]-.*|text-.*\"}[10m])))",
+              "legendFormat": "",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              },
+              "mappings": [],
+              "decimals": 2
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "textMode": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "text": {
+              "valueSize": 28
+            }
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 8,
+            "y": 121
+          },
+          "id": 71
+        },
+        {
+          "type": "stat",
+          "title": "OpenAI - TTFT p95",
+          "description": "Tail time to first token. Matched by model name (gpt-4/5, o-series). The last-resort tier: it only sees traffic when Groq fails, so steady volume here means the primary tier is degrading silently.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "histogram_quantile(0.95, sum by (le) (rate(anime_llm_ttft_seconds_bucket{model=~\"gpt-4.*|gpt-5.*|o[1-4]-.*|text-.*\"}[10m])))",
+              "legendFormat": "",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              },
+              "mappings": [],
+              "decimals": 2
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "textMode": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "text": {
+              "valueSize": 28
+            }
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 12,
+            "y": 121
+          },
+          "id": 72
+        },
+        {
+          "type": "stat",
+          "title": "OpenAI - cost / request",
+          "description": "Metered spend divided by calls over 30m. The self-hosted venue meters at $0 by construction, which is the whole economic argument for routing to it. Matched by model name (gpt-4/5, o-series). The last-resort tier: it only sees traffic when Groq fails, so steady volume here means the primary tier is degrading silently.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "(sum(rate(anime_llm_cost_usd_total{model=~\"gpt-4.*|gpt-5.*|o[1-4]-.*|text-.*\"}[30m])) or vector(0)) / clamp_min(sum(rate(anime_llm_calls_total{model=~\"gpt-4.*|gpt-5.*|o[1-4]-.*|text-.*\"}[30m])) or vector(0), 0.0001)",
+              "legendFormat": "",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "currencyUSD",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              },
+              "mappings": [],
+              "decimals": 5
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "textMode": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "text": {
+              "valueSize": 28
+            }
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 16,
+            "y": 121
+          },
+          "id": 73
+        },
+        {
+          "type": "stat",
+          "title": "OpenAI - error rate",
+          "description": "Share of this provider's calls that failed and fell through to the next tier. A provider can be 'up' and still be failing every structured-output parse. Matched by model name (gpt-4/5, o-series). The last-resort tier: it only sees traffic when Groq fails, so steady volume here means the primary tier is degrading silently.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "100 * (sum(rate(anime_llm_duration_seconds_count{model=~\"gpt-4.*|gpt-5.*|o[1-4]-.*|text-.*\",outcome=\"error\"}[15m])) or vector(0)) / clamp_min(sum(rate(anime_llm_duration_seconds_count{model=~\"gpt-4.*|gpt-5.*|o[1-4]-.*|text-.*\"}[15m])) or vector(0), 0.001)",
+              "legendFormat": "",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "orange",
+                    "value": 1
+                  },
+                  {
+                    "color": "red",
+                    "value": 5
+                  }
+                ]
+              },
+              "mappings": [],
+              "decimals": 1
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "textMode": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "text": {
+              "valueSize": 28
+            }
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 20,
+            "y": 121
+          },
+          "id": 74
+        },
+        {
+          "type": "timeseries",
+          "title": "OpenAI - latency percentiles",
+          "description": "p50/p95/p99 for this provider alone. Comparing these rows against each other is how you judge whether routing to the GPU actually pays off. Matched by model name (gpt-4/5, o-series). The last-resort tier: it only sees traffic when Groq fails, so steady volume here means the primary tier is degrading silently.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "histogram_quantile(0.50, sum by (le) (rate(anime_llm_duration_seconds_bucket{model=~\"gpt-4.*|gpt-5.*|o[1-4]-.*|text-.*\"}[10m])))",
+              "legendFormat": "p50",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "refId": "B",
+              "expr": "histogram_quantile(0.95, sum by (le) (rate(anime_llm_duration_seconds_bucket{model=~\"gpt-4.*|gpt-5.*|o[1-4]-.*|text-.*\"}[10m])))",
+              "legendFormat": "p95",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "refId": "C",
+              "expr": "histogram_quantile(0.99, sum by (le) (rate(anime_llm_duration_seconds_bucket{model=~\"gpt-4.*|gpt-5.*|o[1-4]-.*|text-.*\"}[10m])))",
+              "legendFormat": "p99",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": true
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 126
+          },
+          "id": 75
+        },
+        {
+          "type": "timeseries",
+          "title": "OpenAI - tokens / sec",
+          "description": "Input vs output tokens for this provider. Output is the expensive half almost everywhere, and it is what the venue's decode rate has to keep up with. Matched by model name (gpt-4/5, o-series). The last-resort tier: it only sees traffic when Groq fails, so steady volume here means the primary tier is degrading silently.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by (direction) (rate(anime_llm_tokens_total{model=~\"gpt-4.*|gpt-5.*|o[1-4]-.*|text-.*\"}[5m]))",
+              "legendFormat": "{{direction}}",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": true
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 126
+          },
+          "id": 76
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "6 - Is anything underneath broken?",
+      "id": 77,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 134
       },
       "collapsed": false,
       "panels": []
@@ -1252,9 +4247,9 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 55
+        "y": 135
       },
-      "id": 26
+      "id": 78
     },
     {
       "type": "timeseries",
@@ -1305,9 +4300,9 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 55
+        "y": 135
       },
-      "id": 27
+      "id": 79
     }
   ]
 }
