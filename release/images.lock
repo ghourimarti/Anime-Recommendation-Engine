@@ -1,0 +1,7 @@
+# release/images.lock - written by .github/workflows/release.yml for v0.1.0 (00a7e1ebb2015dd4e491d8470cc6b0020de25653)
+# Deploy these digests, never the tags (G2). Verify first: docs/RELEASE.md
+VERSION=0.1.0
+API_IMAGE=ghcr.io/ghourimarti/anime-recommender/api@sha256:6e5e1701ddfd57df99a2faa1bc02bedc94fc0bbc1aa52285d6f9905cc68afdbc
+WEB_IMAGE=ghcr.io/ghourimarti/anime-recommender/web@sha256:9ac358a8641d302280135664fd3c4a5c7af8088c6015b721e667ac6225d13836
+WORKER_IMAGE=ghcr.io/ghourimarti/anime-recommender/worker@sha256:50419e92f67cb6fc77ee6de5c3ae46f431d241909cee727012d935b0cafff379
+CHART=oci://ghcr.io/ghourimarti/charts/anime-recommender:0.1.0@sha256:015c77c948e1acf464da4d314fedc26d2c85dc015acd3a2f4b8a668e6ae71d01
