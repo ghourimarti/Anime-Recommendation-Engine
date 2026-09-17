@@ -1,0 +1,8 @@
+# Helm values pinning release v0.1.0 by digest (G2). Layer LAST:
+#   helm install anime oci://ghcr.io/ghourimarti/charts/anime-recommender --version 0.1.0 \
+#     -f values-<vendor>.yaml -f values-<env>.yaml -f release/values-images.yaml
+image:
+  tag: "0.1.0"
+  api: { digest: "sha256:6e5e1701ddfd57df99a2faa1bc02bedc94fc0bbc1aa52285d6f9905cc68afdbc" }
+  web: { digest: "sha256:9ac358a8641d302280135664fd3c4a5c7af8088c6015b721e667ac6225d13836" }
+  worker: { digest: "sha256:50419e92f67cb6fc77ee6de5c3ae46f431d241909cee727012d935b0cafff379" }
