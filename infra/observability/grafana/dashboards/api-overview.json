@@ -1194,13 +1194,180 @@
     },
     {
       "type": "row",
+      "title": "Pre-routing signal (global - identical for every venue below)",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 54
+      },
+      "id": 80
+    },
+    {
+      "type": "timeseries",
+      "title": "Rerank: model compute vs wall-clock (p95)",
+      "description": "Two timers over the SAME call. 'wall-clock' is what the stage histogram records: asyncio.to_thread + wait_for, so it also counts any time the call spent waiting for the event loop. 'model compute' times model.predict alone, with the one-off model load deliberately outside the timer. This split was added to test a specific claim -- that rerank latency was mostly scheduling delay, not the model. It disproved it: measured 2026-09-20 both lines sat at 2.2s p95 and their means differed by 0.5ms. The wall-clock IS the model, so the rerank timeouts are CPU cost and a faster/smaller model is the only lever that moves them. If these two lines ever SEPARATE, the gap is the loop, not the reranker -- read the loop-lag panel beside this one before touching the reranker. This row sits ABOVE the per-venue rows on purpose: reranking happens BEFORE routing, so these two lines are identical no matter which venue answered.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(anime_retrieval_stage_duration_seconds_bucket{stage=\"rerank\"}[5m])))",
+          "legendFormat": "wall-clock (stage timer)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(anime_retrieval_rerank_compute_seconds_bucket[5m])))",
+          "legendFormat": "model compute p95",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "C",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(anime_retrieval_rerank_compute_seconds_bucket[5m])))",
+          "legendFormat": "model compute p50",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true,
+            "thresholdsStyle": {
+              "mode": "dashed"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 2.0
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 55
+      },
+      "id": 81
+    },
+    {
+      "type": "timeseries",
+      "title": "Event-loop lag (the control for the panel left)",
+      "description": "A background task sleeps 250ms and records how much LONGER than 250ms it actually took. That overshoot is the event loop's queueing delay, and it is the control for the rerank panel: it is the only way to tell 'the model is slow' from 'the loop was busy'. Healthy here 2026-09-20: p50 0.46ms, p95 0.97ms, p99 3.5ms. A loop blocked by CPU work measures ~966ms (reproduced in test_loop_monitor). While these lines stay sub-millisecond, no request latency anywhere on this dashboard can be blamed on scheduling -- which is exactly what it proved for the reranker. Process-wide, so it is also the first thing to check when a per-venue latency panel below looks wrong.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(anime_runtime_loop_lag_seconds_bucket[5m])))",
+          "legendFormat": "p99",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(anime_runtime_loop_lag_seconds_bucket[5m])))",
+          "legendFormat": "p95",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "C",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(anime_runtime_loop_lag_seconds_bucket[5m])))",
+          "legendFormat": "p50",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 55
+      },
+      "id": 82
+    },
+    {
+      "type": "row",
       "title": "5a - vLLM (self-hosted GPU)",
       "id": 25,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 54
+        "y": 63
       },
       "collapsed": true,
       "panels": [
@@ -1260,7 +1427,7 @@
             "h": 5,
             "w": 4,
             "x": 0,
-            "y": 55
+            "y": 64
           },
           "id": 26
         },
@@ -1320,7 +1487,7 @@
             "h": 5,
             "w": 4,
             "x": 4,
-            "y": 55
+            "y": 64
           },
           "id": 27
         },
@@ -1380,7 +1547,7 @@
             "h": 5,
             "w": 4,
             "x": 8,
-            "y": 55
+            "y": 64
           },
           "id": 28
         },
@@ -1440,7 +1607,7 @@
             "h": 5,
             "w": 4,
             "x": 12,
-            "y": 55
+            "y": 64
           },
           "id": 29
         },
@@ -1500,7 +1667,7 @@
             "h": 5,
             "w": 4,
             "x": 16,
-            "y": 55
+            "y": 64
           },
           "id": 30
         },
@@ -1568,7 +1735,7 @@
             "h": 5,
             "w": 4,
             "x": 20,
-            "y": 55
+            "y": 64
           },
           "id": 31
         },
@@ -1637,7 +1804,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 60
+            "y": 69
           },
           "id": 32
         },
@@ -1688,14 +1855,14 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 60
+            "y": 69
           },
           "id": 33
         },
         {
           "type": "stat",
           "title": "vLLM - engine up",
-          "description": "1 = vLLM is running and scrapeable. 0 is normal in API-LLM mode (make up) and whenever SGLang holds the GPU instead \u2014 only one engine can.",
+          "description": "Engine-NATIVE series, not up{job=\"venue-engine\"}. Both venue rows used to share that query, so whichever engine held the anime-venue alias made BOTH rows read 1 and one of them was always lying. Verified 2026-09-20 with SGLang holding the GPU: the shared query returned 1 for both rows, these return 0 for vLLM and 1 for SGLang.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -1703,7 +1870,7 @@
           "targets": [
             {
               "refId": "A",
-              "expr": "max(up{job=\"venue-engine\"}) or vector(0)",
+              "expr": "clamp_max(count({__name__=~\"vllm[:_].*\"}) or vector(0), 1)",
               "legendFormat": "",
               "datasource": {
                 "type": "prometheus",
@@ -1751,7 +1918,7 @@
             "h": 5,
             "w": 4,
             "x": 0,
-            "y": 68
+            "y": 77
           },
           "id": 34
         },
@@ -1810,7 +1977,7 @@
             "h": 5,
             "w": 4,
             "x": 4,
-            "y": 68
+            "y": 77
           },
           "id": 35
         },
@@ -1877,7 +2044,7 @@
             "h": 5,
             "w": 4,
             "x": 8,
-            "y": 68
+            "y": 77
           },
           "id": 36
         },
@@ -1945,7 +2112,7 @@
             "h": 5,
             "w": 4,
             "x": 12,
-            "y": 68
+            "y": 77
           },
           "id": 37
         },
@@ -2005,7 +2172,7 @@
             "h": 5,
             "w": 4,
             "x": 16,
-            "y": 68
+            "y": 77
           },
           "id": 38
         },
@@ -2065,7 +2232,7 @@
             "h": 5,
             "w": 4,
             "x": 20,
-            "y": 68
+            "y": 77
           },
           "id": 39
         },
@@ -2125,7 +2292,7 @@
             "h": 7,
             "w": 8,
             "x": 0,
-            "y": 73
+            "y": 82
           },
           "id": 40
         },
@@ -2185,7 +2352,7 @@
             "h": 7,
             "w": 8,
             "x": 8,
-            "y": 73
+            "y": 82
           },
           "id": 41
         },
@@ -2238,7 +2405,7 @@
             "h": 7,
             "w": 8,
             "x": 16,
-            "y": 73
+            "y": 82
           },
           "id": 42
         }
@@ -2252,7 +2419,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 80
+        "y": 89
       },
       "collapsed": true,
       "panels": [
@@ -2312,7 +2479,7 @@
             "h": 5,
             "w": 4,
             "x": 0,
-            "y": 81
+            "y": 90
           },
           "id": 44
         },
@@ -2372,7 +2539,7 @@
             "h": 5,
             "w": 4,
             "x": 4,
-            "y": 81
+            "y": 90
           },
           "id": 45
         },
@@ -2432,7 +2599,7 @@
             "h": 5,
             "w": 4,
             "x": 8,
-            "y": 81
+            "y": 90
           },
           "id": 46
         },
@@ -2492,7 +2659,7 @@
             "h": 5,
             "w": 4,
             "x": 12,
-            "y": 81
+            "y": 90
           },
           "id": 47
         },
@@ -2552,7 +2719,7 @@
             "h": 5,
             "w": 4,
             "x": 16,
-            "y": 81
+            "y": 90
           },
           "id": 48
         },
@@ -2620,7 +2787,7 @@
             "h": 5,
             "w": 4,
             "x": 20,
-            "y": 81
+            "y": 90
           },
           "id": 49
         },
@@ -2689,7 +2856,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 86
+            "y": 95
           },
           "id": 50
         },
@@ -2740,14 +2907,14 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 86
+            "y": 95
           },
           "id": 51
         },
         {
           "type": "stat",
           "title": "SGLang - engine up",
-          "description": "1 = SGLang is running and scrapeable. This row and the vLLM row are mutually exclusive by design: one GPU, one engine (make up-sglang / make up-vllm).",
+          "description": "Engine-NATIVE series, not up{job=\"venue-engine\"}. Both venue rows used to share that query, so whichever engine held the anime-venue alias made BOTH rows read 1 and one of them was always lying. Verified 2026-09-20 with SGLang holding the GPU: the shared query returned 1 for both rows, these return 0 for vLLM and 1 for SGLang.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -2755,7 +2922,7 @@
           "targets": [
             {
               "refId": "A",
-              "expr": "max(up{job=\"venue-engine\"}) or vector(0)",
+              "expr": "clamp_max(count({__name__=~\"sglang[:_].*\"}) or vector(0), 1)",
               "legendFormat": "",
               "datasource": {
                 "type": "prometheus",
@@ -2803,14 +2970,14 @@
             "h": 5,
             "w": 4,
             "x": 0,
-            "y": 94
+            "y": 103
           },
           "id": 52
         },
         {
           "type": "stat",
           "title": "SGLang - running requests",
-          "description": "Requests the engine is decoding now.",
+          "description": "Requests the engine is decoding now. Metric names use the underscore spelling Prometheus actually stores (sglang_num_running_reqs); the colon form these panels were written against (sglang:...) is what the engine serves a plain curl, and is never ingested.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -2818,7 +2985,7 @@
           "targets": [
             {
               "refId": "A",
-              "expr": "sum(sglang:num_running_reqs) or vector(0)",
+              "expr": "sum(sglang_num_running_reqs) or vector(0)",
               "legendFormat": "",
               "datasource": {
                 "type": "prometheus",
@@ -2862,14 +3029,14 @@
             "h": 5,
             "w": 4,
             "x": 4,
-            "y": 94
+            "y": 103
           },
           "id": 53
         },
         {
           "type": "stat",
           "title": "SGLang - queued requests",
-          "description": "Requests waiting for a slot.",
+          "description": "Requests waiting for a slot. Metric names use the underscore spelling Prometheus actually stores (sglang_num_running_reqs); the colon form these panels were written against (sglang:...) is what the engine serves a plain curl, and is never ingested.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -2877,7 +3044,7 @@
           "targets": [
             {
               "refId": "A",
-              "expr": "sum(sglang:num_queue_reqs) or vector(0)",
+              "expr": "sum(sglang_num_queue_reqs) or vector(0)",
               "legendFormat": "",
               "datasource": {
                 "type": "prometheus",
@@ -2929,14 +3096,14 @@
             "h": 5,
             "w": 4,
             "x": 8,
-            "y": 94
+            "y": 103
           },
           "id": 54
         },
         {
           "type": "stat",
           "title": "SGLang - token pool used",
-          "description": "KV token-pool utilisation. SGLang's --mem-fraction-static is a share of TOTAL VRAM, not of what is free, which is why a fraction that works on an idle card can starve the cache on a busy desktop (measured here: 0.50 gave a 1,618-token cache, 0.70 gave 42,669).",
+          "description": "KV token-pool utilisation. SGLang's --mem-fraction-static is a share of TOTAL VRAM, not of what is free, which is why a fraction that works on an idle card can starve the cache on a busy desktop (measured here: 0.50 gave a 1,618-token cache, 0.70 gave 42,669). Metric names use the underscore spelling Prometheus actually stores (sglang_num_running_reqs); the colon form these panels were written against (sglang:...) is what the engine serves a plain curl, and is never ingested.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -2944,7 +3111,7 @@
           "targets": [
             {
               "refId": "A",
-              "expr": "100 * (max(sglang:token_usage) or vector(0))",
+              "expr": "100 * (max(sglang_full_token_usage) or vector(0))",
               "legendFormat": "",
               "datasource": {
                 "type": "prometheus",
@@ -2997,14 +3164,14 @@
             "h": 5,
             "w": 4,
             "x": 12,
-            "y": 94
+            "y": 103
           },
           "id": 55
         },
         {
           "type": "stat",
           "title": "SGLang - engine TTFT p95",
-          "description": "Time to first token measured inside the engine.",
+          "description": "Time to first token measured inside the engine. Metric names use the underscore spelling Prometheus actually stores (sglang_num_running_reqs); the colon form these panels were written against (sglang:...) is what the engine serves a plain curl, and is never ingested.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -3012,7 +3179,7 @@
           "targets": [
             {
               "refId": "A",
-              "expr": "histogram_quantile(0.95, sum by (le) (rate(sglang:time_to_first_token_seconds_bucket[10m])))",
+              "expr": "histogram_quantile(0.95, sum by (le) (rate(sglang_time_to_first_token_seconds_bucket[5m])))",
               "legendFormat": "",
               "datasource": {
                 "type": "prometheus",
@@ -3057,14 +3224,14 @@
             "h": 5,
             "w": 4,
             "x": 16,
-            "y": 94
+            "y": 103
           },
           "id": 56
         },
         {
           "type": "stat",
           "title": "SGLang - cache hit rate",
-          "description": "RadixAttention prefix reuse across requests.",
+          "description": "RadixAttention prefix reuse across requests. Metric names use the underscore spelling Prometheus actually stores (sglang_num_running_reqs); the colon form these panels were written against (sglang:...) is what the engine serves a plain curl, and is never ingested.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -3072,7 +3239,7 @@
           "targets": [
             {
               "refId": "A",
-              "expr": "100 * (max(sglang:cache_hit_rate) or vector(0))",
+              "expr": "max(sglang_cache_hit_rate) or vector(0)",
               "legendFormat": "",
               "datasource": {
                 "type": "prometheus",
@@ -3117,14 +3284,14 @@
             "h": 5,
             "w": 4,
             "x": 20,
-            "y": 94
+            "y": 103
           },
           "id": 57
         },
         {
           "type": "timeseries",
           "title": "SGLang - engine throughput",
-          "description": "Prefill and decode token rates reported by SGLang. These series exist only while SGLang is the running engine; the panel is empty under vLLM, which is information, not a fault.",
+          "description": "Prefill and decode token rates reported by SGLang. These series exist only while SGLang is the running engine; the panel is empty under vLLM, which is information, not a fault. Metric names use the underscore spelling Prometheus actually stores (sglang_num_running_reqs); the colon form these panels were written against (sglang:...) is what the engine serves a plain curl, and is never ingested.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -3132,7 +3299,7 @@
           "targets": [
             {
               "refId": "A",
-              "expr": "sum(rate(sglang:prompt_tokens_total[5m]))",
+              "expr": "sum(rate(sglang_prompt_tokens_total[5m]))",
               "legendFormat": "prompt tokens/s",
               "datasource": {
                 "type": "prometheus",
@@ -3141,7 +3308,7 @@
             },
             {
               "refId": "B",
-              "expr": "sum(rate(sglang:generation_tokens_total[5m]))",
+              "expr": "sum(rate(sglang_generation_tokens_total[5m]))",
               "legendFormat": "generation tokens/s",
               "datasource": {
                 "type": "prometheus",
@@ -3177,7 +3344,7 @@
             "h": 7,
             "w": 24,
             "x": 0,
-            "y": 99
+            "y": 108
           },
           "id": 58
         }
@@ -3191,7 +3358,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 106
+        "y": 115
       },
       "collapsed": true,
       "panels": [
@@ -3251,7 +3418,7 @@
             "h": 5,
             "w": 4,
             "x": 0,
-            "y": 107
+            "y": 116
           },
           "id": 60
         },
@@ -3311,7 +3478,7 @@
             "h": 5,
             "w": 4,
             "x": 4,
-            "y": 107
+            "y": 116
           },
           "id": 61
         },
@@ -3371,7 +3538,7 @@
             "h": 5,
             "w": 4,
             "x": 8,
-            "y": 107
+            "y": 116
           },
           "id": 62
         },
@@ -3431,7 +3598,7 @@
             "h": 5,
             "w": 4,
             "x": 12,
-            "y": 107
+            "y": 116
           },
           "id": 63
         },
@@ -3491,7 +3658,7 @@
             "h": 5,
             "w": 4,
             "x": 16,
-            "y": 107
+            "y": 116
           },
           "id": 64
         },
@@ -3559,7 +3726,7 @@
             "h": 5,
             "w": 4,
             "x": 20,
-            "y": 107
+            "y": 116
           },
           "id": 65
         },
@@ -3628,7 +3795,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 112
+            "y": 121
           },
           "id": 66
         },
@@ -3679,7 +3846,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 112
+            "y": 121
           },
           "id": 67
         }
@@ -3693,7 +3860,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 120
+        "y": 129
       },
       "collapsed": true,
       "panels": [
@@ -3753,7 +3920,7 @@
             "h": 5,
             "w": 4,
             "x": 0,
-            "y": 121
+            "y": 130
           },
           "id": 69
         },
@@ -3813,7 +3980,7 @@
             "h": 5,
             "w": 4,
             "x": 4,
-            "y": 121
+            "y": 130
           },
           "id": 70
         },
@@ -3873,7 +4040,7 @@
             "h": 5,
             "w": 4,
             "x": 8,
-            "y": 121
+            "y": 130
           },
           "id": 71
         },
@@ -3933,7 +4100,7 @@
             "h": 5,
             "w": 4,
             "x": 12,
-            "y": 121
+            "y": 130
           },
           "id": 72
         },
@@ -3993,7 +4160,7 @@
             "h": 5,
             "w": 4,
             "x": 16,
-            "y": 121
+            "y": 130
           },
           "id": 73
         },
@@ -4061,7 +4228,7 @@
             "h": 5,
             "w": 4,
             "x": 20,
-            "y": 121
+            "y": 130
           },
           "id": 74
         },
@@ -4130,7 +4297,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 126
+            "y": 135
           },
           "id": 75
         },
@@ -4181,7 +4348,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 126
+            "y": 135
           },
           "id": 76
         }
@@ -4195,7 +4362,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 134
+        "y": 143
       },
       "collapsed": false,
       "panels": []
@@ -4247,7 +4414,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 135
+        "y": 144
       },
       "id": 78
     },
@@ -4300,7 +4467,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 135
+        "y": 144
       },
       "id": 79
     }

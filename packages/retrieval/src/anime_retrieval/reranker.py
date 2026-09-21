@@ -17,6 +17,21 @@ running the golden-set eval):
     ms-marco-MiniLM-L-6-v2     0.33s      0.636     -0.045  REGRESSION
     ms-marco-MiniLM-L-12-v2    0.63s      0.682     +0.000  <- matches baseline
 
+Input LENGTH was then measured the same way — same 20 real candidates (avg 962
+chars), same golden set, same gate. `max_length` caps each (query, candidate)
+pair, and attention cost grows faster than linearly in sequence length, so it is
+the cheapest lever available:
+
+    max_length   latency   success@1   lift over naive   vs baseline
+    512            0.91s     0.653          +0.050         +0.000   (the old default)
+    256            0.66s     0.653          +0.050         +0.000   <- 28% faster, same quality
+    128            0.28s     0.604          +0.000         -0.050   REGRESSION
+
+At 128 the advanced pipeline scores exactly what NAIVE retrieval scores: the
+reranking stage stops contributing anything at all while still costing time.
+256 is the floor that still pays for itself, and it is what buys the headroom
+this stage was missing (p95 compute 1.84s -> ~1.3s against a 2.0s timeout).
+
 L-6 is the tempting pick — it's fastest and it does restore a positive lift over
 naive. But it quietly gives back a query's worth of accuracy against the frozen
 baseline. L-12 costs 0.3s more and reproduces the baseline exactly, at 3x headroom
@@ -34,7 +49,10 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 from typing import TYPE_CHECKING, Protocol
+
+from anime_core.observability.metrics import record_rerank_compute
 
 if TYPE_CHECKING:
     from sentence_transformers import CrossEncoder
@@ -46,7 +64,14 @@ DEFAULT_RERANKER_MODEL = os.environ.get("RERANKER_MODEL", "cross-encoder/ms-marc
 # Truncate each (query, candidate) pair to this many tokens. Chunk texts run to
 # ~1k chars; the tail contributes little relevance signal but costs quadratic
 # attention time. Bounds worst-case rerank latency regardless of chunk size.
-DEFAULT_MAX_LENGTH = int(os.environ.get("RERANKER_MAX_LENGTH", "512"))
+#
+# 256, not 512, and the difference was measured rather than reasoned about: the
+# golden-set gate scores IDENTICALLY at both (success@1 0.653, lift over naive
+# +0.050) while 256 is 28% faster, which is what takes this stage from 85% of its
+# 2.0s timeout down to roughly two thirds. Do not push it to 128 -- there the
+# advanced pipeline scores exactly what naive retrieval scores, i.e. reranking
+# costs time and buys nothing. See the table in the module docstring.
+DEFAULT_MAX_LENGTH = int(os.environ.get("RERANKER_MAX_LENGTH", "256"))
 
 # Module-level cache: same model name → same loaded model instance.
 # .score() runs in a worker thread (asyncio.to_thread), so N concurrent requests
@@ -104,17 +129,29 @@ class BgeReranker:
         it in lifespan (before readiness flips green), and the eval harness does
         it before scoring — otherwise eval measures a cold pipeline that
         production never actually runs, and under-reports the reranker's lift.
+
+        Deliberately bypasses score(): a 1-candidate warmup is not a rerank (real
+        ones score 20) and recording it would drag the low percentiles of
+        anime.retrieval.rerank.compute down once per process.
         """
-        self.score("warmup", ["warmup"])
+        model = self._get_model()
+        model.predict([("warmup", "warmup")])
 
     def score(self, query: str, candidates: list[str]) -> list[float]:
         if not candidates:
             return []
+        # _get_model() is OUTSIDE the timer on purpose: the first call loads weights
+        # (~0.69s measured) and that one-off cost would sit in p99 forever, which is
+        # the opposite of what this metric is for.
         model = self._get_model()
         pairs = [(query, c) for c in candidates]
         # sentence-transformers v5.x stubs are over-strict and reject the
         # documented `list[tuple[str, str]]` input; runtime accepts it fine.
+        started = time.perf_counter()
         scores = model.predict(pairs)  # type: ignore[arg-type]
+        # The honest cost of the model, measured where the work happens rather than
+        # across an await. See metrics.record_rerank_compute for why that matters.
+        record_rerank_compute(time.perf_counter() - started)
         return [float(s) for s in scores]
 
     @property

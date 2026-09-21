@@ -102,7 +102,22 @@ class EmbeddingCache:
 
 
 class ResponseCache:
-    """normalized query -> answer payload. 24h TTL, version- and tenant-scoped."""
+    """normalized query -> answer payload. 24h TTL, version-scoped, tenant-CAPABLE.
+
+    "tenant-capable" is the honest word, and the distinction matters. The key has a
+    tenant segment and isolates correctly when one is supplied -- but every caller in
+    v1 supplies None, so authenticated requests all share one `anon` entry. That is
+    deliberate (see routes/recommend.py: answers are public and non-personalised, and
+    a shared entry is what makes the hit rate worth having), not an oversight.
+
+    THE DAY THAT STOPS BEING TRUE, THIS LEAKS. If an answer ever depends on who asked
+    -- watch history, a user's ratings, entitlements, anything -- the first user's
+    answer is served to everyone else for the full 24h TTL, and nothing here would
+    raise. The guard is test_response_cache_payload_is_not_user_scoped, which pins the
+    payload's field list: adding a user-scoped field to RecommendationResult fails that
+    test and points back here, because the schema is the only place the change is
+    visible.
+    """
 
     def __init__(self, cache: Cache) -> None:
         self._cache = cache

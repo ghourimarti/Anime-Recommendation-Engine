@@ -1,0 +1,45 @@
+{{- if .Values.pdb.enabled }}
+# PodDisruptionBudget — added in P7.5.
+#
+# WITHOUT THIS, `kubectl drain` EVICTS EVERY MATCHING POD ON THE NODE AT ONCE.
+# That is not a theoretical concern: node drains are how routine maintenance
+# works on managed Kubernetes. EKS and DOKS drain nodes one at a time during
+# version upgrades and instance replacement, so an unprotected Deployment can
+# lose every replica that happens to share a node — during an operation nobody
+# thinks of as risky.
+#
+# minAvailable, not maxUnavailable: minAvailable states the invariant that
+# actually matters ("at least one replica must keep serving") and stays correct
+# when the HPA changes the replica count. maxUnavailable: 1 means something
+# different at 2 replicas than at 10.
+#
+# A PDB only constrains VOLUNTARY disruption — drains and evictions. It does not
+# protect against a node dying outright; that is what topologySpreadConstraints
+# on the pod template is for. The two are complements, not alternatives, and
+# P7.5 added both after measuring a drain take the api to 91% request failure.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "anime.name" . }}-api
+  namespace: {{ .Values.namespace }}
+  labels: {{- include "anime.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.pdb.api.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "anime.selectorLabels" . | nindent 6 }}
+      component: api
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "anime.name" . }}-web
+  namespace: {{ .Values.namespace }}
+  labels: {{- include "anime.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.pdb.web.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "anime.selectorLabels" . | nindent 6 }}
+      component: web
+{{- end }}

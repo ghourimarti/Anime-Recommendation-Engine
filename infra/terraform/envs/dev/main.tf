@@ -18,7 +18,6 @@ module "secrets" {
 module "eks" {
   source              = "../../modules/eks"
   name                = var.name_prefix
-  vpc_id              = module.vpc.vpc_id
   subnet_ids          = module.vpc.private_subnet_ids
   node_instance_types = ["t3.medium"] # dev sizing
   node_desired_size   = 2

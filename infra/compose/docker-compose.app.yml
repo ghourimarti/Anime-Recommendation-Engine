@@ -24,6 +24,25 @@
 # with OTEL_SDK_DISABLED=false in .env when you run `make up-obs`.
 name: anime-recommender
 
+# IMAGE REFS ARE PARAMETERIZED (P7.2.5)
+# -------------------------------------
+# The defaults are exactly the locally-built tags this file has always used, so
+# `make up` behaves identically with nothing set. Overriding them is what lets the
+# SAME compose file run the PUBLISHED, signed images instead of local builds:
+#
+#   ANIME_API_IMAGE     api + migrate      (default anime-api:latest)
+#   ANIME_WEB_IMAGE     web                (default anime-web:latest)
+#   ANIME_WORKER_IMAGE  worker + sqs-init  (default anime-worker:latest)
+#
+# Why this matters: every acceptance run before P7.2.5 tested images built on this
+# machine, never the ones actually shipped. Those differ whenever the build
+# context, .dockerignore or architecture differs - and a tag is a MUTABLE pointer,
+# so `v0.1.0` can resolve to different bytes later. Point these at a digest
+# (`...@sha256:...`) and the bytes under test are pinned.
+#
+# NOTE: pass APP_BUILD= (empty) with a digest ref. `make up` defaults to
+# `up --build`, and Docker cannot tag a freshly built image with a digest, so a
+# build would fail rather than silently test the wrong bytes.
 services:
   sqs-init:
     # Creates the SQS queues + DLQs (with redrive policy) in LocalStack, reusing
@@ -32,7 +51,7 @@ services:
     build:
       context: ../..
       dockerfile: apps/worker/Dockerfile
-    image: anime-worker:latest
+    image: ${ANIME_WORKER_IMAGE:-anime-worker:latest}
     container_name: anime-sqs-init
     command:
       - python
@@ -54,7 +73,7 @@ services:
     build:
       context: ../..
       dockerfile: apps/api/Dockerfile
-    image: anime-api:latest
+    image: ${ANIME_API_IMAGE:-anime-api:latest}
     container_name: anime-migrate
     command: ["alembic", "upgrade", "head"]
     # One-shot: runs alembic and exits. It inherits the api image's HEALTHCHECK,
@@ -71,7 +90,7 @@ services:
     build:
       context: ../..
       dockerfile: apps/api/Dockerfile
-    image: anime-api:latest
+    image: ${ANIME_API_IMAGE:-anime-api:latest}
     container_name: anime-api
     # Secrets (OPENAI_API_KEY, GROQ_API_KEY, CLERK_*) flow from .env.
     env_file:
@@ -145,7 +164,7 @@ services:
         # The only build input left. The Clerk key and site URL are runtime env below (R2).
         # Billing checkout stub (UI redesign 3D) — build-time; false = preview.
         NEXT_PUBLIC_BILLING_ENABLED: ${NEXT_PUBLIC_BILLING_ENABLED:-false}
-    image: anime-web:latest
+    image: ${ANIME_WEB_IMAGE:-anime-web:latest}
     container_name: anime-web
     environment:
       # The BFF proxy calls the API server-side via this URL — service
@@ -170,7 +189,7 @@ services:
     build:
       context: ../..
       dockerfile: apps/worker/Dockerfile
-    image: anime-worker:latest
+    image: ${ANIME_WORKER_IMAGE:-anime-worker:latest}
     container_name: anime-worker
     command: ["python", "-m", "anime_worker", "--queue", "feedback"]
     env_file:

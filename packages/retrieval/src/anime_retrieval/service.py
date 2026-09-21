@@ -19,12 +19,14 @@ from collections.abc import AsyncIterator
 from typing import Protocol
 
 from anime_core.fallback import DEGRADED_NOTICE, NO_MATCH_NOTICE, popular_fallback
+from anime_core.killswitch import LlmKillSwitch, llm_enabled_from_env
 from anime_core.llm_client import LLMClient
 from anime_core.observability.metrics import record_refusal, record_retrieval_confidence
 from anime_core.resilience import RetrievalUnavailableError
 from anime_core.schemas import RecommendationResult, Recommendations
 from anime_core.venue import RETRIEVAL_CONFIDENCE
 
+from anime_retrieval.catalog import TitleCatalog, refusal_for
 from anime_retrieval.types import Candidate
 
 logger = logging.getLogger(__name__)
@@ -34,10 +36,51 @@ logger = logging.getLogger(__name__)
 # accounting is overkill until the corpus/candidate count grows).
 MAX_CANDIDATE_CHARS = 800
 
+# Refuse WITHOUT calling the LLM when retrieval found nothing that resembles the
+# query. A raw cross-encoder logit, the same quantity _top_rerank_confidence()
+# returns, so the number is comparable to VENUE_CONFIDENCE_THRESHOLD (which is 1.0
+# in this space) -- but it answers a different question and is nowhere near it.
+#
+# CALIBRATED, not chosen (2026-09-20, 10 adversarial + 59 answerable golden queries,
+# retrieval only, no LLM):
+#
+#     threshold   refusal_recall   false_refusal_rate
+#      -11.00         0.70               0.00
+#      -10.75         0.80               0.00
+#       -9.50         1.00               0.10
+#       -7.00         1.00               0.25
+#
+# -11.0 buys the deterministic half of the win with the largest margin to the
+# nearest legitimate query (-10.72, from the HARD_ANSWERABLE over-refusal set):
+# 0.28 logit. -10.75 scores better on paper and leaves 0.03, which is not a margin,
+# it is a coincidence. Recall below 1.00 is fine here because this is a FLOOR, not
+# the refusal policy: the LLM still declines what it declines today.
+#
+# WHAT THIS DOES NOT DO: it does not fix the named-but-absent-title case (I.F6).
+# "tell me about Demon Slayer and Jujutsu Kaisen" scores -4.339 -- HIGHER than the
+# median legitimate vague query (-4.843) -- because the corpus is full of similar
+# shounen and the reranker correctly finds them. Catching that class needs a
+# threshold that refuses ~1 in 3 real queries. Confidence answers "is anything here
+# similar", never "does the title you named exist". That needs a title lookup.
+REFUSE_BELOW_CONFIDENCE = float(os.environ.get("REFUSE_BELOW_CONFIDENCE", "-11.0"))
+
+# Deliberately not the NO_MATCH_NOTICE popular fallback: that hands back three
+# popular anime, which for an out-of-scope question is the confabulation this gate
+# exists to stop. An honest empty answer is the product.
+OUT_OF_SCOPE_REFUSAL = (
+    "I only cover anime in this catalogue, and nothing in it matches that. "
+    "Try describing the kind of show you want -- a genre, a mood, or a premise."
+)
+
 
 def _llm_enabled() -> bool:
-    """Cost kill switch: LLM_ENABLED=false short-circuits generation."""
-    return os.environ.get("LLM_ENABLED", "true").strip().lower() != "false"
+    """Cost kill switch, environment half: LLM_ENABLED=false short-circuits generation.
+
+    Kept as the fallback rather than replaced. When no LlmKillSwitch is injected (tests,
+    the eval harness) or Redis cannot answer, this is the answer -- which is exactly what
+    the code did before the switch became flippable at runtime.
+    """
+    return llm_enabled_from_env()
 
 
 def _top_rerank_confidence(candidates: list[Candidate]) -> float | None:
@@ -133,14 +176,48 @@ def _match_title(title: str, title_to_id: dict[str, int]) -> int | None:
 class RecommendationService:
     """Orchestrates retrieval + generation + grounding."""
 
-    def __init__(self, *, retriever: Retriever, llm: LLMClient) -> None:
+    def __init__(
+        self,
+        *,
+        retriever: Retriever,
+        llm: LLMClient,
+        catalog: TitleCatalog | None = None,
+        kill_switch: LlmKillSwitch | None = None,
+    ) -> None:
         self._retriever = retriever
         self._llm = llm
+        # Optional like `catalog`: without one the switch is env-only, which is the
+        # behaviour every caller had before it could be flipped at runtime.
+        self._kill_switch = kill_switch
+        # Optional so every existing construction (tests, eval harness) keeps working
+        # and simply skips the check, which is the pre-existing behaviour.
+        self._catalog = catalog
+
+    async def _generation_enabled(self) -> bool:
+        """Redis first, environment second. See anime_core.killswitch for why."""
+        if self._kill_switch is not None:
+            return await self._kill_switch.llm_enabled()
+        return _llm_enabled()
+
+    def _named_but_absent(self, query: str) -> list[str]:
+        """Titles the query names that this catalogue does not have."""
+        return self._catalog.missing_titles(query) if self._catalog else []
 
     async def recommend(self, query: str, *, tenant_id: str | None = None) -> RecommendationResult:
         # Cost kill switch: skip the LLM entirely, serve the popular floor.
-        if not _llm_enabled():
+        if not await self._generation_enabled():
             return popular_fallback(DEGRADED_NOTICE)
+
+        # The user named a show and we do not have it. Answer that BEFORE retrieval:
+        # it does not depend on what retrieval finds, and the alternative is what this
+        # system used to do -- hand back three unrelated titles as though they were the
+        # answer. Retrieval confidence cannot make this call (measured: the absent-title
+        # query scores HIGHER than the median legitimate vague one), which is why this
+        # is a lookup rather than a threshold. See anime_retrieval.catalog.
+        if missing := self._named_but_absent(query):
+            logger.info("query names titles not in the catalogue: %s", missing)
+            record_refusal()
+            return RecommendationResult(items=[], refusal=refusal_for(missing))
 
         # Retrieval — pgvector→FTS fallback lives in the pipeline; if BOTH fail it
         # raises RetrievalUnavailableError → we degrade to popular.
@@ -160,7 +237,23 @@ class RecommendationService:
         # for the mirror-image problem. Task-scoped under asyncio, so concurrent
         # requests never read each other's value. Nothing consumes it while the
         # flag is off.
-        RETRIEVAL_CONFIDENCE.set(_top_rerank_confidence(candidates))
+        confidence = _top_rerank_confidence(candidates)
+        RETRIEVAL_CONFIDENCE.set(confidence)
+
+        # The deterministic floor, BEFORE any LLM call. Two reasons it is here and
+        # not in the prompt: the answer is then identical whichever tier serves
+        # (measured 2026-09-20: Groq refused 9/9 where the gpt-4o-mini fallback
+        # answered 3/3 on the same query), and an out-of-scope question stops
+        # costing a generation at all.
+        #
+        # `confidence is None` means the reranker did not run, NOT that the match is
+        # poor -- a RERANK_TIMEOUT or a cold start produces exactly that. Refusing on
+        # it would turn a slow host into a refusal storm, so this fails OPEN and the
+        # LLM decides, as it does today.
+        if confidence is not None and confidence < REFUSE_BELOW_CONFIDENCE:
+            logger.info("retrieval confidence %.3f below floor; refusing", confidence)
+            record_refusal()
+            return RecommendationResult(items=[], refusal=OUT_OF_SCOPE_REFUSAL)
 
         context = build_context(candidates)
 
@@ -198,8 +291,15 @@ class RecommendationService:
         return RecommendationResult.of(grounded)
 
     async def astream(self, query: str, *, tenant_id: str | None = None) -> AsyncIterator[str]:
-        if not _llm_enabled():
+        if not await self._generation_enabled():
             yield DEGRADED_NOTICE
+            return
+        # Same check as recommend(), for the same reason: both entry points must
+        # refuse the same things.
+        if missing := self._named_but_absent(query):
+            logger.info("query names titles not in the catalogue: %s", missing)
+            record_refusal()
+            yield refusal_for(missing)
             return
         try:
             candidates = await self._retriever.retrieve(query, tenant_id=tenant_id)
@@ -212,7 +312,15 @@ class RecommendationService:
         # Same confidence publication as recommend() — both entry points must set
         # it, or streaming requests would route on whatever value a previous
         # request happened to leave in the ContextVar's default.
-        RETRIEVAL_CONFIDENCE.set(_top_rerank_confidence(candidates))
+        confidence = _top_rerank_confidence(candidates)
+        RETRIEVAL_CONFIDENCE.set(confidence)
+        # Same floor as recommend(), or the two entry points would disagree about
+        # what the product refuses -- and the streaming one would be the lenient one.
+        if confidence is not None and confidence < REFUSE_BELOW_CONFIDENCE:
+            logger.info("retrieval confidence %.3f below floor; refusing", confidence)
+            record_refusal()
+            yield OUT_OF_SCOPE_REFUSAL
+            return
         context = build_context(candidates)
         # Graceful degradation on the streaming path — mirror the
         # structured recommend() guard. Without this, an LLM failure on BOTH

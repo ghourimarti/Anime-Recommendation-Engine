@@ -19,13 +19,16 @@ from contextlib import asynccontextmanager
 from anime_core.cache import get_cache
 from anime_core.caches import EmbeddingCache, ResponseCache
 from anime_core.cost_meter import CostMeter
-from anime_core.db.engine import dispose_engine
+from anime_core.db.engine import dispose_engine, session_scope
 from anime_core.embedder import CachingEmbedder
 from anime_core.embeddings import OpenAIEmbedder
+from anime_core.killswitch import LlmKillSwitch
 from anime_core.llm_client import build_default_llm_client
-from anime_core.observability import get_langfuse_handler, shutdown_langfuse
+from anime_core.observability import get_langfuse_handler, loop_monitor, shutdown_langfuse
 from anime_core.quotas import QuotaCounter
 from anime_core.sqs import SqsJobPublisher
+from anime_core.vector_index import PgvectorIndex
+from anime_retrieval.catalog import load_catalog
 from anime_retrieval.reranker import BgeReranker
 from fastapi import FastAPI
 
@@ -50,6 +53,27 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await asyncio.to_thread(app.state.reranker.warm)
     except Exception as exc:  # never let warm-up block startup
         logger.warning("reranker warm-up failed (%s); will lazy-load per request", exc)
+    # The titles this deployment can talk about, read once. It answers "the user named
+    # a show we do not have", which retrieval confidence provably cannot: the
+    # absent-title query scores HIGHER than the median legitimate vague one, so a
+    # threshold that caught it would refuse ~1 real query in 3 (measured 2026-09-20).
+    # Loaded here, not per request, because it is a small lookup table that only
+    # changes on re-ingest. load_catalog never raises: a failure yields an empty
+    # catalogue, which fails OPEN.
+    async with session_scope() as session:
+        app.state.title_catalog = await load_catalog(session)
+        # Warm the pgvector path in the same session we already opened. Dense retrieval
+        # times out on the first ~2 requests after `make up` and then serves the same
+        # query in 54ms, so the cost is first-use work landing on a real user -- who
+        # silently gets sparse-only results, because retrieval degrades rather than
+        # fails. Doing it here means readiness only goes green once the first query
+        # would actually succeed, which is the same contract the reranker warm-up has.
+        try:
+            await PgvectorIndex(session).warm()
+        except Exception as exc:  # advisory, exactly like the reranker warm-up
+            logger.warning("dense warm-up failed (%s); first request may degrade", exc)
+        else:
+            logger.info("dense (pgvector) path warmed")
     # Langfuse callback wired into every LLM call so each Groq /
     # OpenAI invocation emits a trace with prompt / tokens / cost / latency.
     # Returns None when LANGFUSE_* env unset — the app boots without Langfuse.
@@ -62,11 +86,23 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Cost controls: per-user quota gate + cost meter. Both share the
     # cache handle; CostMeter is stateless (pure pricing math).
     app.state.quota_counter = QuotaCounter(cache)
+    # The cost kill switch, readable at request time from Redis so it can be thrown
+    # DURING an incident rather than after a redeploy. Falls back to LLM_ENABLED when
+    # Redis cannot answer, which is what the switch did before it was flippable.
+    app.state.kill_switch = LlmKillSwitch(cache)
     app.state.cost_meter = CostMeter()
     # SQS publisher for async jobs (feedback → eval, etc.).
     # Constructed once; publishing is fire-and-forget on the request path.
     app.state.job_publisher = SqsJobPublisher()
+    # Event-loop lag sampler. The reference is held on app.state deliberately: a
+    # bare create_task() can be garbage collected mid-flight, and the metric would
+    # then stop with no error anywhere. Purely observational — it starts last so a
+    # failure here can never prevent the app from serving.
+    app.state.loop_monitor = loop_monitor.start()
     yield
+    # Shutdown: stop the lag sampler first, so it cannot record against a loop that
+    # is already tearing down.
+    await loop_monitor.stop(getattr(app.state, "loop_monitor", None))
     # Shutdown: flush Langfuse so the in-flight traces actually land before the
     # process exits — without this, the last few traces silently drop in dev.
     shutdown_langfuse()

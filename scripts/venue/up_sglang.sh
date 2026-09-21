@@ -170,6 +170,14 @@ echo "  context-len: $CONTEXT_LEN   (parity with vLLM max-model-len)"
 # http://anime-venue:8000/v1 (docker-compose.app.yml). SGLang's default 30000
 # made that URL fail for SGLang only, and a failed venue call does not raise:
 # the api silently fell back to the hosted LLM. Found by `make llm-status`.
+#
+# --enable-metrics is NOT optional here, and it is not symmetric with vLLM.
+# vLLM serves /metrics by default; SGLang serves 404 without this flag. Without
+# it the engine works perfectly and is invisible: up{job="venue-engine"} is DOWN,
+# no sglang:* series exist, the whole "Engine internals" dashboard row (KV cache,
+# queue depth, TTFT/TPOT, prefix-cache hits) is blank, and the inspection cannot
+# tell which engine holds the GPU. Measured 2026-09-20: /v1/models returned 200
+# with the right model while /metrics returned 404.
 docker run -d \
     --name "$CONTAINER" \
     --gpus all \
@@ -186,6 +194,7 @@ docker run -d \
     --port 8000 \
     --mem-fraction-static "$MEM_FRAC" \
     --context-length "$CONTEXT_LEN" \
+    --enable-metrics \
     >/dev/null
 
 echo "  container started; watching startup (up to ${WAIT_SECS}s)…"

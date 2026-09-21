@@ -14,4 +14,11 @@ data:
   SQS_QUEUE_PREFIX: {{ .Values.config.sqsQueuePrefix | quote }}
   SEMANTIC_CACHE_THRESHOLD: {{ .Values.config.semanticCacheThreshold | quote }}
   QUOTA_FREE_TIER_DAILY: {{ .Values.config.quotaFreeTierDaily | quote }}
+  # Required at startup: the app fails closed if this is empty rather than
+  # metering every call at $0.00 (anime_core.cost_meter.PricingConfigError).
+  LLM_PRICING: {{ required "config.llmPricing is required — the api refuses to start without it" .Values.config.llmPricing | quote }}
+  # Auth path config. Empty clerkJwksUrl => api answers 503 on every authed route.
+  CLERK_JWKS_URL: {{ .Values.config.clerkJwksUrl | quote }}
+  CLERK_ISSUER: {{ .Values.config.clerkIssuer | quote }}
+  CLERK_AUDIENCE: {{ .Values.config.clerkAudience | quote }}
   AWS_DEFAULT_REGION: {{ .Values.awsRegion | quote }}

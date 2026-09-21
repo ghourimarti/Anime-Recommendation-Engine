@@ -44,7 +44,16 @@ def get_service(
         embedder=state.embedder,
         reranker=state.reranker,
     )
-    inner = RecommendationService(retriever=pipeline, llm=state.llm)
+    inner = RecommendationService(
+        retriever=pipeline,
+        llm=state.llm,
+        # getattr, not state.title_catalog: a test app built without lifespan has no
+        # such attribute, and the check is optional by design (None = skip).
+        catalog=getattr(state, "title_catalog", None),
+        # Lets `make llm-off` stop generation without a restart. getattr for the same
+        # reason as catalog: a test app built without lifespan has no state for it.
+        kill_switch=getattr(state, "kill_switch", None),
+    )
     # Response caching only, on a NORMALIZED query key. The semantic cache that used
     # to sit here was removed: measured on real query pairs, meaning-inverted
     # near-misses score higher on cosine than genuine paraphrases, so it could not

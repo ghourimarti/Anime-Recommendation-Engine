@@ -13,6 +13,7 @@ from typing import Protocol
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from anime_core.db.models import EMBEDDING_DIM
 from anime_core.db.models import AnimeChunk as ORMChunk
 
 
@@ -50,6 +51,26 @@ class PgvectorIndex:
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+
+    async def warm(self) -> None:
+        """Run one throwaway nearest-neighbour query so the first REAL one is not the first.
+
+        Measured on this stack: dense retrieval times out on the first ~2 requests after
+        `make up` and then answers the same query in 54ms. The cost is first-use work --
+        connection, plan, and pgvector's index pages -- and it lands on whoever queries
+        first. Because retrieval degrades on purpose, that user silently gets sparse-only
+        results and a 200, so the symptom is invisible unless you are watching the stage
+        metrics. Any battery that starts measuring at request #1 reads a healthy stack as
+        broken (the reason the inspection script warms up first).
+
+        Deliberately NOT a zero vector: cosine distance against zero is undefined and
+        pgvector yields NaN, which sorts unpredictably and would exercise a different
+        path from the real one. A unit vector is a legitimate point in the space.
+
+        Costs no OpenAI call -- the embedding is synthetic, and only the query path is
+        being warmed, not the embedder.
+        """
+        await self.search([1.0] + [0.0] * (EMBEDDING_DIM - 1), k=1)
 
     async def search(
         self,

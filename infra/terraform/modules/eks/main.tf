@@ -1,7 +1,6 @@
 # EKS module — managed cluster + node group + OIDC (IRSA).
 
 variable "name" { type = string }
-variable "vpc_id" { type = string }
 variable "subnet_ids" {
   type        = list(string)
   description = "Private subnets for the nodes."
@@ -57,10 +56,41 @@ resource "aws_iam_role_policy_attachment" "cluster" {
   policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/AmazonEKSClusterPolicy"
 }
 
+# Envelope-encrypts Kubernetes Secrets at rest in etcd (AWS-0039, found by
+# `trivy config` in P7.6). Without this, Secrets are only base64-encoded in etcd —
+# and this cluster's anime-app-secrets holds the OpenAI, Groq and Clerk keys plus
+# DATABASE_URL, which is precisely the material the rest of the project goes to
+# lengths to protect.
+#
+# TIMING IS THE POINT: enabling secrets encryption on an EXISTING cluster is a
+# one-way operation and can force cluster replacement. Adding it before the first
+# apply costs nothing. This was added while `terraform plan` was still blocked on
+# credentials, i.e. the last moment it is free.
+resource "aws_kms_key" "eks_secrets" {
+  description = "Envelope encryption for ${var.name} Kubernetes Secrets"
+  # 30 days, not the 7-day minimum: a key deleted by mistake takes every Secret
+  # in etcd with it, and recovery is impossible once the window closes.
+  deletion_window_in_days = 30
+  enable_key_rotation     = true
+  tags                    = var.tags
+}
+
+resource "aws_kms_alias" "eks_secrets" {
+  name          = "alias/${var.name}-eks-secrets"
+  target_key_id = aws_kms_key.eks_secrets.key_id
+}
+
 resource "aws_eks_cluster" "this" {
   name     = var.name
   role_arn = aws_iam_role.cluster.arn
   version  = var.kubernetes_version
+
+  encryption_config {
+    provider {
+      key_arn = aws_kms_key.eks_secrets.arn
+    }
+    resources = ["secrets"]
+  }
 
   vpc_config {
     subnet_ids              = var.subnet_ids

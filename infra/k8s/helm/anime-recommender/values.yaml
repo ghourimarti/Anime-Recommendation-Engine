@@ -62,6 +62,53 @@ config:
   sqsQueuePrefix: anime-dev
   semanticCacheThreshold: "0.92"
   quotaFreeTierDaily: "20"
+  # Clerk JWT verification. NON-SECRET: a JWKS endpoint serves PUBLIC keys, and
+  # issuer/audience are identifiers, not credentials — the signing secret stays in
+  # CLERK_SECRET_KEY in the Secret.
+  #
+  # clerkJwksUrl is REQUIRED for a working auth path: apps/api auth.py fails closed
+  # with 503 "authentication not configured" when it is empty, rather than silently
+  # accepting unverified tokens. Left empty by default because the URL is
+  # instance-specific; each environment sets its own.
+  #
+  # clerkIssuer matters more than it looks: _verify_token passes `issuer or None`,
+  # so an empty value SKIPS issuer validation entirely. A token signed by any key
+  # the JWKS serves would then pass. Set it in every real environment.
+  clerkJwksUrl: ""
+  clerkIssuer: ""
+  clerkAudience: ""
+  # Per-million-token rates as {"<model>": [<input $/1M>, <output $/1M>]}.
+  #
+  # NON-SECRET on purpose: these are published list prices, not credentials, so
+  # they belong in the ConfigMap. The app treats pricing as env precisely so a
+  # rate correction is a restart, not a rebuild and redeploy.
+  #
+  # Rates are STRINGS, never JSON numbers: 0.075 has no exact binary double
+  # representation, so a float would bake a rounding error into every cost row
+  # before the arithmetic starts. anime_core.cost_meter parses these to Decimal.
+  #
+  # Must cover every model D4/D4b can route to — an unpriced model raises
+  # UnknownModelError on the hot path rather than silently metering $0.00.
+  # Self-hosted venue models are NOT listed: cost_meter zero-rates them
+  # automatically, since their marginal token cost really is zero.
+  llmPricing: >-
+    {"openai/gpt-oss-20b":["0.075","0.30"],
+    "openai/gpt-oss-120b":["0.15","0.60"],
+    "llama-3.3-70b-versatile":["0.59","0.79"],
+    "llama-3.1-8b-instant":["0.05","0.08"],
+    "gpt-4o-mini":["0.15","0.60"],
+    "gpt-4o":["2.50","10.00"]}
+
+# Voluntary-disruption budget. Node drains are routine on managed Kubernetes —
+# EKS and DOKS drain one node at a time during upgrades — and without a PDB the
+# eviction is unconstrained. P7.5 measured a drain drop 91% of requests.
+#
+# Disabled locally by values-local.yaml: kind has 2 workers and the local data
+# tier is node-bound, so a PDB there blocks drains rather than smoothing them.
+pdb:
+  enabled: true
+  api: { minAvailable: 1 }
+  web: { minAvailable: 1 }
 
 # Progressive delivery. Enabled: the api is an Argo Rollouts Rollout with the
 # canary below and an automated analysis gate. Disabled: a plain Deployment.
@@ -73,6 +120,22 @@ rollout:
 
 api:
   replicas: 2
+  # Autoscaling for the component the NFR actually loads (50 RPS sustained /
+  # 200 peak). Before this the api was pinned at 2 replicas while the WEB tier —
+  # which mostly serves SSR — had an HPA. That is backwards from where the load is.
+  #
+  # CPU IS A PROXY HERE, AND A WEAK ONE. An api blocked on Groq is I/O-bound:
+  # latency climbs while CPU stays flat, so a CPU target may not trip at all under
+  # exactly the load that matters. It is used because it needs no extra
+  # infrastructure and works identically on kind, DOKS and EKS.
+  # P8.9 must check this against real load: if p95 degrades while CPU sits under
+  # target, the trigger has to move to RPS or in-flight concurrency (KEDA with a
+  # Prometheus trigger), not just a lower percentage.
+  hpa:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
   port: 8000
   resources:
     requests: { cpu: 250m, memory: 512Mi }

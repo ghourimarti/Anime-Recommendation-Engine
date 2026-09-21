@@ -27,11 +27,23 @@ set -euo pipefail
 
 BASE_URL="${BASE_URL:-http://localhost:1005}"
 CALLS=10
+# Warmup calls are MADE but excluded from the sample. The first request after a
+# cold start pays for corpus load and reranker warm-up and is not representative
+# of steady state — and with a 10-call sample, p95 IS the max, so one cold
+# outlier single-handedly defines the number the gate reads.
+WARMUP="${WARMUP:-1}"
+# The NFR from Phase 1, ASSERTED rather than printed. This used to be an echo:
+# the script announced "p95 < 8000ms" and then decided PASS purely on HTTP
+# status. A run measured 9025ms and still reported PASS. A threshold a gate
+# states but never compares is decoration.
+P95_BUDGET_MS="${P95_BUDGET_MS:-8000}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --base-url) BASE_URL="$2"; shift 2 ;;
         --calls) CALLS="$2"; shift 2 ;;
+        --warmup) WARMUP="$2"; shift 2 ;;
+        --p95-budget-ms) P95_BUDGET_MS="$2"; shift 2 ;;
         -h|--help)
             sed -n '2,/^$/p' "$0" | sed 's/^# \?//'
             exit 0
@@ -91,6 +103,27 @@ echo "  OK    K6_AUTH_TOKEN present — running /v1/recommend probes"
 echo
 echo "[3/3] /v1/recommend × ${CALLS} (sample p50/p95):"
 TIMINGS=()
+
+# Warm-up: same request path, result discarded. A failure here still counts —
+# a 500 is a 500 whether or not we sample its latency.
+for w in $(seq 1 "$WARMUP"); do
+    [[ "$WARMUP" -gt 0 ]] || break
+    t0=$(ms_now)
+    status=$(curl -s -o /dev/null -w "%{http_code}" \
+        -X POST "${BASE_URL}/v1/recommend" \
+        -H "Authorization: Bearer ${K6_AUTH_TOKEN}" \
+        -H "Content-Type: application/json" \
+        -d "{\"query\":\"smoke warmup ${w}\"}" || true)
+    status="${status:-000}"
+    t1=$(ms_now)
+    if [[ "$status" == "200" ]]; then
+        echo "  warm  call w${w}: ${status} in $(( t1 - t0 ))ms (excluded from sample)"
+    else
+        echo "  FAIL  warmup w${w}: ${status}"
+        FAILED=1
+    fi
+done
+
 for i in $(seq 1 "$CALLS"); do
     t0=$(ms_now)
     status=$(curl -s -o /tmp/anime_smoke_response.json -w "%{http_code}" \
@@ -122,8 +155,14 @@ echo
 echo "[summary]"
 echo "  /v1/recommend p50 ≈ ${SORTED[$p50_idx]}ms"
 echo "  /v1/recommend p95 ≈ ${SORTED[$p95_idx]}ms  (N=${n})"
-echo "  NFR: full-response p95 < 8000ms (warm cache);"
-echo "               first call after cold start will be higher (corpus + reranker load)."
+P95_MS="${SORTED[$p95_idx]}"
+echo "  budget: p95 < ${P95_BUDGET_MS}ms (Phase 1 NFR, warm cache; ${WARMUP} warm-up call(s) excluded)"
+if [[ "$P95_MS" -gt "$P95_BUDGET_MS" ]]; then
+    echo "  BREACH: p95 ${P95_MS}ms exceeds the ${P95_BUDGET_MS}ms budget"
+    FAILED=1
+else
+    echo "  OK    : p95 ${P95_MS}ms within budget"
+fi
 
 if [[ "$FAILED" -ne 0 ]]; then
     echo

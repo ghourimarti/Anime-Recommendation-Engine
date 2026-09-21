@@ -112,3 +112,26 @@ def test_unicode_variants_normalize_together() -> None:
     same cache key instead of a permanent miss.
     """
     assert normalize_query("ＡＮＩＭＥ") == normalize_query("anime")  # noqa: RUF001
+
+
+def test_response_cache_payload_is_not_user_scoped() -> None:
+    """The guard for the one way the shared cache turns into a cross-user leak.
+
+    Every v1 caller passes tenant=None, so all authenticated users share one `anon`
+    entry. That is correct *only while answers are public and non-personalised*, and
+    the isolation test above proves the key mechanism works the moment a tenant IS
+    supplied. What nothing else catches is the change that makes sharing wrong:
+    someone adds a user-scoped field to the cached payload, the route keeps calling
+    without a tenant, and the first user's answer is served to everyone for 24h.
+
+    Nothing would raise. The schema is the only place that change is visible, so the
+    field list is pinned here. A new field fails this test on purpose: decide whether
+    it is public, then either add it below or start passing a tenant.
+    """
+    from anime_core.schemas import Recommendation, RecommendationResult
+
+    assert set(RecommendationResult.model_fields) == {"items", "refusal", "degraded", "notice"}
+    assert set(Recommendation.model_fields) == {"mal_id", "title", "summary", "why_match"}, (
+        "the cached payload gained a field — if it depends on WHO asked, the shared "
+        "`anon` cache key in ResponseCache now leaks it between users (see I.F3)"
+    )

@@ -138,6 +138,15 @@ class RetrievalPipeline:
         # The reranker is sync + CPU-bound: run it in a thread (so it doesn't block
         # the event loop) with a timeout. On failure/timeout, skip reranking and keep
         # the hybrid order — degraded relevance beats a failed request.
+        #
+        # READ THE TIMER BELOW CAREFULLY. It spans the whole `await`, so it measures
+        # thread handoff + the model + the wait to be rescheduled on the event loop.
+        # That is CORRECT for a user-facing number — it is what the caller waits — but
+        # it is NOT model latency, and reading it as such is a trap this repo has
+        # already fallen into. Measured 2026-09-20: model 0.056s, this timer 1.250s p50.
+        # For the model's own cost see anime.retrieval.rerank.compute (recorded inside
+        # BgeReranker.score); for the gap's cause see anime.runtime.loop_lag.
+        # Do not swap the reranker on the strength of THIS number alone.
         if deduped:
             started = time.perf_counter()
             try:

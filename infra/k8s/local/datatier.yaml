@@ -1,0 +1,202 @@
+# Local data tier for kind — Postgres (pgvector) + Redis.
+#
+# WHY THIS IS NOT IN THE HELM CHART
+# ---------------------------------
+# The chart ships api + web + workers and nothing else, because in every cloud
+# target the data tier is a managed service (RDS + ElastiCache) that lives in
+# Terraform, not in Helm. Adding Postgres/Redis templates to the chart "because
+# it's easier locally" would make the local chart a structurally different chart
+# from the cloud one — and P9.5's portability proof ("same chart, config-only
+# diff") would become unfalsifiable. So kind gets a stand-in that sits OUTSIDE
+# the chart, exactly where RDS sits outside it in AWS.
+#
+# PARITY WITH COMPOSE (infra/compose/docker-compose.data.yml)
+# -----------------------------------------------------------
+# Same images, same credentials, same Redis eviction policy. Stage 2 changes the
+# SUBSTRATE (kubelet, Services, PVCs) — it must not also change the software, or
+# a failure is ambiguous between "K8s wiring is wrong" and "different Postgres".
+#
+# Applied by scripts/deploy/up_local_k8s.sh with `-n <namespace>`; intentionally
+# namespace-less here so the file is reusable.
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: anime-postgres-data
+spec:
+  # kind ships rancher/local-path as the default StorageClass. Leaving
+  # storageClassName unset uses it — and exercises dynamic provisioning, which
+  # is one of the things Stage 2 exists to prove and compose cannot.
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: anime-postgres
+  labels: { app: anime-postgres, tier: data }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: anime-postgres }
+  strategy:
+    # Recreate, NOT RollingUpdate. A ReadWriteOnce PVC can only be mounted by one
+    # node at a time, so a rolling update deadlocks: the new pod cannot attach
+    # while the old pod still holds the volume, and the old pod is not torn down
+    # until the new one is Ready. Classic single-replica-with-RWO trap.
+    type: Recreate
+  template:
+    metadata:
+      labels: { app: anime-postgres, tier: data }
+    spec:
+      containers:
+        - name: postgres
+          image: pgvector/pgvector:pg16
+          env:
+            - { name: POSTGRES_DB,       value: anime }
+            - { name: POSTGRES_USER,     value: anime }
+            - { name: POSTGRES_PASSWORD, value: anime }
+            # The image's entrypoint only runs initdb when PGDATA is empty. Pointing
+            # at a subdirectory keeps lost+found (created by some volume drivers) out
+            # of the data dir, which otherwise makes initdb refuse to start.
+            - { name: PGDATA,            value: /var/lib/postgresql/data/pgdata }
+          ports:
+            - { containerPort: 5432, name: postgres }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "anime", "-d", "anime"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "anime", "-d", "anime"]
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 3
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits:   { memory: 1Gi }
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: anime-postgres-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: anime-postgres
+  labels: { app: anime-postgres, tier: data }
+spec:
+  type: ClusterIP
+  selector: { app: anime-postgres }
+  ports:
+    - { port: 5432, targetPort: postgres, name: postgres }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: anime-redis
+  labels: { app: anime-redis, tier: data }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: anime-redis }
+  template:
+    metadata:
+      labels: { app: anime-redis, tier: data }
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          # Same eviction policy as compose: a cache must never OOM and must never
+          # grow unbounded. No PVC on purpose — losing the cache is correct behavior,
+          # and persisting it would hide cold-start bugs the app must tolerate.
+          args:
+            - redis-server
+            - --maxmemory
+            - 256mb
+            - --maxmemory-policy
+            - allkeys-lru
+          ports:
+            - { containerPort: 6379, name: redis }
+          readinessProbe:
+            exec: { command: ["redis-cli", "ping"] }
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            exec: { command: ["redis-cli", "ping"] }
+            initialDelaySeconds: 15
+            periodSeconds: 15
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits:   { memory: 320Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: anime-redis
+  labels: { app: anime-redis, tier: data }
+spec:
+  type: ClusterIP
+  selector: { app: anime-redis }
+  ports:
+    - { port: 6379, targetPort: redis, name: redis }
+---
+# LocalStack — SQS + S3 emulator. The workers talk to this instead of real AWS,
+# exactly as they do in compose (infra/compose/docker-compose.data.yml).
+#
+# Omitting it was a real defect found in P7.3: without it the workers crash with
+# botocore NoCredentialsError on their first SQS poll. Parity with compose is the
+# rule for this file — Stage 2 changes the substrate, not the software.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: localstack
+  labels: { app: localstack, tier: data }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: localstack }
+  template:
+    metadata:
+      labels: { app: localstack, tier: data }
+    spec:
+      containers:
+        - name: localstack
+          image: localstack/localstack:3
+          env:
+            - { name: SERVICES, value: "sqs,s3" }
+            - { name: DEBUG,    value: "0" }
+          ports:
+            - { containerPort: 4566, name: edge }
+          readinessProbe:
+            httpGet: { path: /_localstack/health, port: edge }
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            httpGet: { path: /_localstack/health, port: edge }
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            timeoutSeconds: 5
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits:   { memory: 1Gi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: localstack
+  labels: { app: localstack, tier: data }
+spec:
+  type: ClusterIP
+  selector: { app: localstack }
+  ports:
+    - { port: 4566, targetPort: edge, name: edge }

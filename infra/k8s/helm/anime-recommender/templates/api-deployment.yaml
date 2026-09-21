@@ -14,7 +14,12 @@ metadata:
   namespace: {{ .Values.namespace }}
   labels: {{- include "anime.labels" . | nindent 4 }}
 spec:
+  {{- if not .Values.api.hpa.enabled }}
+  # Omitted when an HPA owns this field. Helm would otherwise reset it on every
+  # upgrade: HPA scales to 8 under load, the next `helm upgrade` writes 2 back and
+  # drops six pods mid-traffic. Leaving it unset lets the HPA keep ownership.
   replicas: {{ .Values.api.replicas }}
+  {{- end }}
   revisionHistoryLimit: 3
   selector:
     matchLabels:

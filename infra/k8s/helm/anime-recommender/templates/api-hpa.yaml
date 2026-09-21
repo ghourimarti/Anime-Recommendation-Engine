@@ -1,0 +1,37 @@
+{{- if .Values.api.hpa.enabled }}
+# HPA for the api — the component the Phase 1 NFR actually loads (50 RPS
+# sustained, 200 peak). Added in P7.4 after the cluster showed the api pinned at
+# replicas: 2 with no autoscaler, while the web tier had one.
+#
+# scaleTargetRef follows the rollout toggle. Argo Rollouts is a drop-in
+# replacement for Deployment as a scale target, but the HPA must name the kind
+# that actually exists: pointing at a Deployment that the chart did not render
+# (because rollout.enabled) leaves the HPA permanently unable to find its target,
+# reporting <unknown> and scaling nothing — the same silent-inert failure P7.4
+# was opened to fix.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "anime.name" . }}-api
+  namespace: {{ .Values.namespace }}
+  labels: {{- include "anime.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    {{- if .Values.rollout.enabled }}
+    apiVersion: argoproj.io/v1alpha1
+    kind: Rollout
+    {{- else }}
+    apiVersion: apps/v1
+    kind: Deployment
+    {{- end }}
+    name: {{ include "anime.name" . }}-api
+  minReplicas: {{ .Values.api.hpa.minReplicas }}
+  maxReplicas: {{ .Values.api.hpa.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.api.hpa.targetCPUUtilizationPercentage }}
+{{- end }}

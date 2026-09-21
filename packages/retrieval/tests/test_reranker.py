@@ -54,6 +54,24 @@ def test_max_length_is_passed_through(monkeypatch: pytest.MonkeyPatch) -> None:
     assert rr._model_cache[r.model_name].max_length == 128
 
 
+def test_default_max_length_is_the_measured_one() -> None:
+    """256 is a measured value, not a preference, and drifting off it costs either way.
+
+    Raising it back to 512 costs 28% more rerank latency for an IDENTICAL golden-set
+    score (success@1 0.653, lift over naive +0.050 at both), and this stage runs
+    against a 2.0s timeout it was already missing. Lowering it to 128 makes the
+    advanced pipeline score exactly what naive retrieval scores -- the reranker then
+    costs time and contributes nothing (success@1 0.604, lift +0.000).
+
+    Both failure modes are silent: latency and relevance are measured in different
+    places, and neither shows up as an error. So the number is pinned here.
+    """
+    assert rr.DEFAULT_MAX_LENGTH == 256, (
+        "rerank max_length moved off the measured value -- re-run `make eval-gate` "
+        "and the latency bench before changing it, and update the docstring table"
+    )
+
+
 def test_concurrent_first_calls_load_the_model_once(monkeypatch: pytest.MonkeyPatch) -> None:
     """Regression: an unlocked lazy load let every concurrent request load its own copy.
 

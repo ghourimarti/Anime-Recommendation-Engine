@@ -342,3 +342,64 @@ def record_llm_duration(*, model: str, seconds: float, outcome: str = "ok") -> N
 def record_llm_ttft(*, model: str, seconds: float) -> None:
     """Record time to first streamed token. Called once per stream, on token 1."""
     _llm_ttft.record(seconds, {"model": model})
+
+
+# ─── I.F1b: separating rerank COMPUTE from SCHEDULING DELAY ──────────────────
+# anime.retrieval.stage.duration{stage="rerank"} is wall-clock across an
+# `await asyncio.wait_for(asyncio.to_thread(...))`, so it measures FOUR things and
+# reports them as one: thread-pool handoff, the model, and the wait to be
+# rescheduled on the event loop once the thread finishes.
+#
+# Measured 2026-09-20, all inside the API container:
+#     .predict() on 20 real-length pairs, warm        0.056 s
+#     same call via to_thread+wait_for, IDLE loop     0.050 s
+#     same call via to_thread+wait_for, BUSY loop     0.257-0.354 s   (5-7x)
+#     what the stage metric reports in production     1.250 s p50
+#
+# Compute is ~4% of the reported number. That single conflated metric sent three
+# separate "make the reranker faster" proposals at a component that was never the
+# problem -- including a smaller model that the golden set had already measured as
+# a -0.045 success@1 regression. Splitting it is the prerequisite for judging ANY
+# latency change here, which is why this lands before touching the timeout.
+_rerank_compute = _meter.create_histogram(
+    "anime.retrieval.rerank.compute",
+    unit="s",
+    description=(
+        "Time INSIDE the cross-encoder scoring call only — no thread handoff, no "
+        "event-loop wait. Compare against "
+        'anime_retrieval_stage_duration_seconds{stage="rerank"}: that one is what the '
+        "user waits, this one is what the model costs, and the GAP is scheduling "
+        "delay (see anime.runtime.loop_lag). A large gap means the reranker is being "
+        "blamed for the event loop — do not swap the model on the strength of the "
+        "wall-clock number alone."
+    ),
+)
+_loop_lag = _meter.create_histogram(
+    "anime.runtime.loop_lag",
+    unit="s",
+    description=(
+        "Event-loop scheduling delay: how much LATER than requested a fixed-interval "
+        "sleep actually woke up. Near zero on a healthy loop. This is the named cause "
+        "behind the rerank wall-clock/compute gap, and it explains a failure mode that "
+        "is otherwise invisible: loop lag inflates rerank wall-clock past "
+        "RERANK_TIMEOUT, the timeout yields no confidence score, and "
+        "should_use_venue(None) fails safe to hosted — so a saturated event loop "
+        "silently makes the self-hosted GPU unreachable no matter how healthy it is."
+    ),
+)
+
+
+def record_rerank_compute(seconds: float) -> None:
+    """Record time spent strictly inside the cross-encoder call.
+
+    Recorded by the reranker itself, not by the pipeline, so it measures the work
+    regardless of caller and cannot accidentally re-absorb the handoff it exists to
+    exclude. Model LOAD is deliberately not counted: it is a one-off ~0.69 s that
+    would sit in p99 forever and misrepresent steady-state cost.
+    """
+    _rerank_compute.record(seconds)
+
+
+def record_loop_lag(seconds: float) -> None:
+    """Record one event-loop lag sample. See loop_monitor for the sampler."""
+    _loop_lag.record(seconds)

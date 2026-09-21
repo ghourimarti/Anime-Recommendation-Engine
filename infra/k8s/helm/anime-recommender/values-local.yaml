@@ -34,3 +34,18 @@ networkPolicy:
 web:
   # kind has no ingress: reach web with `kubectl port-forward svc/<release>-web 3000:80`.
   siteUrl: http://localhost:3000
+
+config:
+  # With no OTLP endpoint the SDK falls back to the CONSOLE exporter and prints a
+  # full JSON span for every DB call and request, which buries the structured app
+  # logs that `kubectl logs` is needed for during Stage 2 debugging. Traces are
+  # exercised for real in Phase 8 against a collector; here they only cost signal.
+  otelSdkDisabled: "true"
+
+pdb:
+  # OFF on kind, and this is a substrate decision rather than a preference.
+  # With 2 schedulable workers and a node-bound local data tier, minAvailable: 1
+  # makes `kubectl drain` block waiting for an eviction that cannot succeed —
+  # turning a drill into a hang. On DOKS/EKS the data tier is external and there
+  # are more nodes, so the PDB does what it is meant to. Exercised there (P8.10).
+  enabled: false

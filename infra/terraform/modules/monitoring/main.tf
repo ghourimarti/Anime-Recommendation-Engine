@@ -28,7 +28,12 @@ variable "log_retention_days" {
 
 resource "aws_sns_topic" "billing" {
   name = "${var.name_prefix}-billing-alerts"
-  tags = var.tags
+  # AWS-0095 (trivy, P7.6). The AWS-managed alias rather than a customer key: the
+  # payload is billing-threshold text, so a CMK would add key management for no
+  # additional protection of anything sensitive. alias/aws/sns needs no IAM policy
+  # work and still satisfies encryption-at-rest.
+  kms_master_key_id = "alias/aws/sns"
+  tags              = var.tags
 }
 
 resource "aws_sns_topic_subscription" "email" {

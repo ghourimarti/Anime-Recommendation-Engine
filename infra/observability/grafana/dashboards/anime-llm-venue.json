@@ -601,6 +601,160 @@
       "id": 11
     },
     {
+      "type": "timeseries",
+      "title": "Rerank: model compute vs wall-clock (p95)",
+      "description": "Two timers over the SAME call. 'wall-clock' is what the stage histogram records: asyncio.to_thread + wait_for, so it also counts any time the call spent waiting for the event loop. 'model compute' times model.predict alone, with the one-off model load deliberately outside the timer. This split was added to test a specific claim -- that rerank latency was mostly scheduling delay, not the model. It disproved it: measured 2026-09-20 both lines sat at 2.2s p95 and their means differed by 0.5ms. The wall-clock IS the model, so the rerank timeouts are CPU cost and a faster/smaller model is the only lever that moves them. If these two lines ever SEPARATE, the gap is the loop, not the reranker -- read the loop-lag panel beside this one before touching the reranker.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(anime_retrieval_stage_duration_seconds_bucket{stage=\"rerank\"}[5m])))",
+          "legendFormat": "wall-clock (stage timer)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(anime_retrieval_rerank_compute_seconds_bucket[5m])))",
+          "legendFormat": "model compute p95",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "C",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(anime_retrieval_rerank_compute_seconds_bucket[5m])))",
+          "legendFormat": "model compute p50",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true,
+            "thresholdsStyle": {
+              "mode": "dashed"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 2.0
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 31
+      },
+      "id": 26
+    },
+    {
+      "type": "timeseries",
+      "title": "Event-loop lag (the control for the panel left)",
+      "description": "A background task sleeps 250ms and records how much LONGER than 250ms it actually took. That overshoot is the event loop's queueing delay, and it is the control for the rerank panel: it is the only way to tell 'the model is slow' from 'the loop was busy'. Healthy here 2026-09-20: p50 0.46ms, p95 0.97ms, p99 3.5ms. A loop blocked by CPU work measures ~966ms (reproduced in test_loop_monitor). While these lines stay sub-millisecond, no request latency anywhere on this dashboard can be blamed on scheduling -- which is exactly what it proved for the reranker.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(anime_runtime_loop_lag_seconds_bucket[5m])))",
+          "legendFormat": "p99",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(anime_runtime_loop_lag_seconds_bucket[5m])))",
+          "legendFormat": "p95",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "C",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(anime_runtime_loop_lag_seconds_bucket[5m])))",
+          "legendFormat": "p50",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 31
+      },
+      "id": 27
+    },
+    {
       "type": "row",
       "title": "3 - Engine internals (vLLM / SGLang on the GPU)",
       "id": 12,
@@ -608,7 +762,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 31
+        "y": 39
       },
       "collapsed": false,
       "panels": []
@@ -672,14 +826,14 @@
         "h": 5,
         "w": 4,
         "x": 0,
-        "y": 32
+        "y": 40
       },
       "id": 13
     },
     {
       "type": "stat",
       "title": "Requests running",
-      "description": "Sequences the engine is decoding right now.",
+      "description": "Sequences the engine is decoding right now. Queries BOTH engines (vLLM colon names, SGLang underscore names) and shows whichever is live \u2014 only one holds the GPU at a time. Before this the row was vLLM-only and read blank whenever SGLang served.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -687,7 +841,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(vllm:num_requests_running) or vector(0)",
+          "expr": "(sum(vllm:num_requests_running) or vector(0)) or (sum(sglang_num_running_reqs) or vector(0))",
           "legendFormat": "",
           "datasource": {
             "type": "prometheus",
@@ -731,14 +885,14 @@
         "h": 5,
         "w": 4,
         "x": 4,
-        "y": 32
+        "y": 40
       },
       "id": 14
     },
     {
       "type": "stat",
       "title": "Requests waiting",
-      "description": "Queued because the KV cache or the batch is full. Sustained non-zero = the GPU is the bottleneck.",
+      "description": "Queued because the KV cache or the batch is full. Sustained non-zero = the GPU is the bottleneck. Queries BOTH engines (vLLM colon names, SGLang underscore names) and shows whichever is live \u2014 only one holds the GPU at a time. Before this the row was vLLM-only and read blank whenever SGLang served.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -746,7 +900,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(vllm:num_requests_waiting) or vector(0)",
+          "expr": "(sum(vllm:num_requests_waiting) or vector(0)) or (sum(sglang_num_queue_reqs) or vector(0))",
           "legendFormat": "",
           "datasource": {
             "type": "prometheus",
@@ -798,14 +952,14 @@
         "h": 5,
         "w": 4,
         "x": 8,
-        "y": 32
+        "y": 40
       },
       "id": 15
     },
     {
       "type": "stat",
       "title": "KV cache used",
-      "description": "Share of the paged KV cache in use. Near 100% means new requests queue; this is the number that --mem-fraction-static / --gpu-memory-utilization buys.",
+      "description": "Share of the paged KV cache in use. Near 100% means new requests queue; this is the number that --mem-fraction-static / --gpu-memory-utilization buys. Queries BOTH engines (vLLM colon names, SGLang underscore names) and shows whichever is live \u2014 only one holds the GPU at a time. Before this the row was vLLM-only and read blank whenever SGLang served.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -813,7 +967,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "100 * max(vllm:kv_cache_usage_perc) or vector(0)",
+          "expr": "(100 * max(vllm:kv_cache_usage_perc) or vector(0)) or (100 * max(sglang_full_token_usage) or vector(0))",
           "legendFormat": "",
           "datasource": {
             "type": "prometheus",
@@ -866,14 +1020,14 @@
         "h": 5,
         "w": 4,
         "x": 12,
-        "y": 32
+        "y": 40
       },
       "id": 16
     },
     {
       "type": "stat",
       "title": "TTFT p95",
-      "description": "Time to first token: prefill plus queueing. This is what a streaming user feels as 'did it hear me'.",
+      "description": "Time to first token: prefill plus queueing. This is what a streaming user feels as 'did it hear me'. Queries BOTH engines (vLLM colon names, SGLang underscore names) and shows whichever is live \u2014 only one holds the GPU at a time. Before this the row was vLLM-only and read blank whenever SGLang served.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -881,7 +1035,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm:time_to_first_token_seconds_bucket[5m])))",
+          "expr": "(histogram_quantile(0.95, sum by (le) (rate(vllm:time_to_first_token_seconds_bucket[5m])))) or (histogram_quantile(0.95, sum by (le) (rate(sglang_time_to_first_token_seconds_bucket[5m]))))",
           "legendFormat": "",
           "datasource": {
             "type": "prometheus",
@@ -926,14 +1080,14 @@
         "h": 5,
         "w": 4,
         "x": 16,
-        "y": 32
+        "y": 40
       },
       "id": 17
     },
     {
       "type": "stat",
       "title": "TPOT p95",
-      "description": "Time per output token after the first - the decode rate a reader experiences as speed.",
+      "description": "Time per output token after the first - the decode rate a reader experiences as speed. Queries BOTH engines (vLLM colon names, SGLang underscore names) and shows whichever is live \u2014 only one holds the GPU at a time. Before this the row was vLLM-only and read blank whenever SGLang served.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -941,7 +1095,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm:request_time_per_output_token_seconds_bucket[5m])))",
+          "expr": "(histogram_quantile(0.95, sum by (le) (rate(vllm:request_time_per_output_token_seconds_bucket[5m])))) or (histogram_quantile(0.95, sum by (le) (rate(sglang_inter_token_latency_seconds_bucket[5m]))))",
           "legendFormat": "",
           "datasource": {
             "type": "prometheus",
@@ -986,14 +1140,14 @@
         "h": 5,
         "w": 4,
         "x": 20,
-        "y": 32
+        "y": 40
       },
       "id": 18
     },
     {
       "type": "timeseries",
       "title": "Engine token throughput",
-      "description": "Prompt tokens are prefill work; generation tokens are decode work. Prefill spikes with long contexts, decode scales with answer length.",
+      "description": "Prompt tokens are prefill work; generation tokens are decode work. Prefill spikes with long contexts, decode scales with answer length. Queries BOTH engines (vLLM colon names, SGLang underscore names) and shows whichever is live \u2014 only one holds the GPU at a time. Before this the row was vLLM-only and read blank whenever SGLang served.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1001,7 +1155,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(rate(vllm:prompt_tokens_total[5m]))",
+          "expr": "(sum(rate(vllm:prompt_tokens_total[5m]))) or (sum(rate(sglang_prompt_tokens_total[5m])))",
           "legendFormat": "prompt tokens/s",
           "datasource": {
             "type": "prometheus",
@@ -1010,7 +1164,7 @@
         },
         {
           "refId": "B",
-          "expr": "sum(rate(vllm:generation_tokens_total[5m]))",
+          "expr": "(sum(rate(vllm:generation_tokens_total[5m]))) or (sum(rate(sglang_generation_tokens_total[5m])))",
           "legendFormat": "generation tokens/s",
           "datasource": {
             "type": "prometheus",
@@ -1046,14 +1200,14 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 37
+        "y": 45
       },
       "id": 19
     },
     {
       "type": "timeseries",
       "title": "Queue time and end-to-end latency (p95)",
-      "description": "Queue time separates 'the model is slow' from 'the model is busy'. If queue time dominates, add capacity or shed load; if e2e dominates, the request itself is heavy.",
+      "description": "Queue time separates 'the model is slow' from 'the model is busy'. If queue time dominates, add capacity or shed load; if e2e dominates, the request itself is heavy. NOTE: vLLM-only \u2014 SGLang publishes no equivalent, so this panel is blank under SGLang by construction, not by fault. NOTE: vLLM-only \u2014 SGLang publishes no equivalent, so this panel is blank under SGLang by construction, not by fault. Queries BOTH engines (vLLM colon names, SGLang underscore names) and shows whichever is live \u2014 only one holds the GPU at a time. Before this the row was vLLM-only and read blank whenever SGLang served.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1106,14 +1260,14 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 37
+        "y": 45
       },
       "id": 20
     },
     {
       "type": "timeseries",
       "title": "Prefix cache hit rate",
-      "description": "Reused KV blocks across requests. A shared system prompt should make this high; near zero means every request pays full prefill.",
+      "description": "Reused KV blocks across requests. A shared system prompt should make this high; near zero means every request pays full prefill. NOTE: vLLM-only \u2014 SGLang publishes no equivalent, so this panel is blank under SGLang by construction, not by fault. Queries BOTH engines (vLLM colon names, SGLang underscore names) and shows whichever is live \u2014 only one holds the GPU at a time. Before this the row was vLLM-only and read blank whenever SGLang served.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1159,14 +1313,14 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 45
+        "y": 53
       },
       "id": 21
     },
     {
       "type": "timeseries",
       "title": "Engine outcomes / sec",
-      "description": "Completed generations by finish reason. A rise in 'length' means answers are being truncated by max_tokens.",
+      "description": "Completed generations by finish reason. A rise in 'length' means answers are being truncated by max_tokens. NOTE: vLLM-only \u2014 SGLang publishes no equivalent, so this panel is blank under SGLang by construction, not by fault. Queries BOTH engines (vLLM colon names, SGLang underscore names) and shows whichever is live \u2014 only one holds the GPU at a time. Before this the row was vLLM-only and read blank whenever SGLang served.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1210,7 +1364,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 45
+        "y": 53
       },
       "id": 22
     },
@@ -1222,7 +1376,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 52
+        "y": 60
       },
       "collapsed": false,
       "panels": []
@@ -1274,7 +1428,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 53
+        "y": 61
       },
       "id": 24
     },
@@ -1325,7 +1479,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 53
+        "y": 61
       },
       "id": 25
     }

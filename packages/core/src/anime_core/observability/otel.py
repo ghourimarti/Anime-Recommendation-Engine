@@ -110,6 +110,16 @@ CONFIDENCE_BUCKETS = (
     0.731, 0.75, 0.8, 0.85, 0.9, 0.95, 0.99,
 )  # fmt: skip
 
+# Event-loop lag is a different scale again. A healthy loop lags SINGLE-DIGIT
+# MILLISECONDS -- measured here 2026-09-20, mean 3.3ms -- so DURATION_BUCKETS_SECONDS
+# would put every healthy sample in its first bucket ("<= 0.005") and the panel could
+# not tell a 0.4ms loop from a 4ms one. The top end still reaches seconds because the
+# failure this metric exists to catch is a loop blocked by CPU work, measured at 966ms.
+LAG_BUCKETS_SECONDS = (
+    0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025,
+    0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0,
+)  # fmt: skip
+
 _VIEWS = (
     View(
         instrument_name="anime.http.duration",
@@ -136,6 +146,20 @@ _VIEWS = (
     View(
         instrument_name="anime.llm.ttft",
         aggregation=ExplicitBucketHistogramAggregation(DURATION_BUCKETS_SECONDS),
+    ),
+    # Rerank MODEL time, as opposed to the wall-clock the stage histogram records.
+    # Same seconds scale and the same reason: without this View it inherits the
+    # millisecond defaults, and measured 2026-09-20 that reported a p95 of 9.5s for
+    # a stage whose whole wall-clock is 2.4s -- a number produced entirely by
+    # interpolating inside one 0-to-5 bucket. The comparison only means something
+    # when both histograms resolve at the same boundaries.
+    View(
+        instrument_name="anime.retrieval.rerank.compute",
+        aggregation=ExplicitBucketHistogramAggregation(DURATION_BUCKETS_SECONDS),
+    ),
+    View(
+        instrument_name="anime.runtime.loop_lag",
+        aggregation=ExplicitBucketHistogramAggregation(LAG_BUCKETS_SECONDS),
     ),
 )
 

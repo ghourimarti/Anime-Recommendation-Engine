@@ -1,0 +1,68 @@
+# Trivy IaC findings accepted for this project, each with the reason.
+#
+# WHY A BASELINE INSTEAD OF LEAVING THEM NOISY
+# --------------------------------------------
+# `trivy config` reports 21 findings here. Four of the HIGH/CRITICAL ones are
+# intentional properties of the design, not defects. Left unsuppressed, every run
+# prints the same 21 and the scan stops being read — the same failure mode as a
+# gate that can never fail, arrived at from the opposite direction. Baselining the
+# accepted ones lets the scan be a real gate: it fails on anything NEW.
+#
+# Adding a line here is a decision, not housekeeping. Each needs a reason that
+# would survive someone asking "why is this safe?" — and anything whose answer is
+# "it's probably fine" does not belong in this file.
+#
+# Reviewed: 2026-09-19 (P7.6). Re-review when the topology changes, and in P9.3
+# when IRSA and real IAM boundaries land.
+
+# ─── AWS-0104 (CRITICAL) — unrestricted egress to 0.0.0.0/0 ──────────────────
+# The application's core function is calling third-party LLM APIs: Groq, OpenAI,
+# Clerk JWKS, and Langfuse. Those are internet endpoints with rotating IP ranges
+# behind CDNs, so an egress allowlist by CIDR is not maintainable and would fail
+# closed at the worst time — mid-request, when a provider rotates an address.
+#
+# The mitigation is not egress CIDRs; it is that nothing in the cluster holds data
+# worth exfiltrating in the clear (Secrets are KMS-envelope-encrypted per
+# AWS-0039) and egress is from private subnets through a NAT gateway, so no
+# workload is reachable inbound.
+#
+# REVISIT IF: the app ever handles regulated data, at which point egress goes
+# through a proxy with an allowlist and this line is removed.
+AWS-0104
+
+# ─── AWS-0164 (HIGH) — subnet associates public IP address ───────────────────
+# Flagged on aws_subnet.public, whose purpose is to be public: it carries the ALB
+# and the NAT gateway. A subnet that cannot assign public IPs cannot host either.
+#
+# What matters is what is NOT in it: EKS nodes, RDS and ElastiCache are all in
+# private subnets. The finding is the scanner reading a property without the
+# intent, and the intent is legible from the resource name.
+#
+# REVISIT IF: any workload subnet starts setting map_public_ip_on_launch.
+AWS-0164
+
+# ─── AWS-0132 (HIGH) — S3 bucket not encrypted with a customer-managed key ───
+# The buckets use SSE-S3 (AES-256), so data IS encrypted at rest. The finding is
+# specifically that the key is AWS-managed rather than customer-managed.
+#
+# A CMK buys key-rotation control, per-key access policy, and an audit trail of
+# key use. That is worth real money and operational burden when the bucket holds
+# regulated data; these hold Terraform state (already access-blocked and
+# versioned) and build artifacts. The Phase 1 NFRs put SOC 2 and HIPAA out of
+# scope for v1, which is the condition that makes SSE-S3 sufficient.
+#
+# REVISIT IF: SOC 2 comes into scope — it is listed as a v1 non-goal precisely so
+# this kind of decision has a written trigger rather than being re-litigated.
+AWS-0132
+
+# ─── AWS-0136 (HIGH) — SNS topic not encrypted with a customer-managed key ───
+# The topic carries billing-threshold notifications: "spend crossed 75% of
+# budget". It is encrypted with alias/aws/sns, so the objection is again
+# AWS-managed vs customer-managed rather than plaintext.
+#
+# A CMK here would add key policy and rotation management to protect text that
+# contains no credentials, no personal data, and nothing an attacker could use.
+# Noted because the previous state (no encryption at all, AWS-0095) WAS worth
+# fixing and was fixed in P7.6 — this is the residual stricter rule, not the
+# original gap.
+AWS-0136

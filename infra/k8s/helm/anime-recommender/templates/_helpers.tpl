@@ -59,12 +59,31 @@ testing something other than what the Deployment runs.
 */}}
 {{- define "anime.api.podTemplate" -}}
 metadata:
+  annotations:
+    # See the note in web.yaml — rolls pods on ConfigMap change (P7.3).
+    checksum/config: {{ include (print .Template.BasePath "/configmap.yaml") . | sha256sum }}
   labels:
     {{- include "anime.selectorLabels" . | nindent 4 }}
     component: api
     app: {{ include "anime.name" . }}-api
 spec:
   serviceAccountName: {{ .Values.serviceAccount.api.name }}
+  # Keep replicas on different nodes. The default scheduler spreads as a
+  # preference, not a constraint — MEASURED in P7.5: after one node drain both
+  # api replicas ended up on the same worker, where a single node failure would
+  # have taken the whole api down.
+  #
+  # ScheduleAnyway, not DoNotSchedule: on a cluster with fewer schedulable nodes
+  # than replicas, DoNotSchedule leaves pods Pending forever — trading an
+  # availability risk for a guaranteed outage.
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          {{- include "anime.selectorLabels" . | nindent 10 }}
+          component: api
   securityContext:
     runAsNonRoot: true
     runAsUser: 10001
@@ -80,13 +99,45 @@ spec:
         - secretRef: { name: {{ .Values.externalSecrets.targetName }} }
       # Liveness = process up (no deps); readiness = can serve (checks DB) — the
       # K8s distinction the api's /health vs /ready endpoints implement.
+      # preStop closes the endpoint-propagation race. Deleting a pod sends SIGTERM
+      # and begins endpoint removal CONCURRENTLY; endpoint removal then has to
+      # reach kube-proxy on every node. uvicorn exits on SIGTERM long before that
+      # finishes, so kube-proxy keeps routing to a dead pod and those requests get
+      # connection-refused.
+      #
+      # MEASURED (P7.5, before this hook): pod-kill dropped 1/119 requests and a
+      # rollout-restart dropped 3/176 — as URLError, i.e. connection-level, not
+      # HTTP. The sleep keeps the container serving while the removal propagates;
+      # SIGTERM only arrives after preStop returns.
+      #
+      # 10s < terminationGracePeriodSeconds (30) on purpose: the grace period must
+      # cover preStop PLUS the app's own shutdown, or the kubelet SIGKILLs mid-drain.
+      lifecycle:
+        preStop:
+          exec:
+            command: ["python", "-c", "import time; time.sleep(10)"]
+      # startupProbe gates the other two: neither liveness nor readiness runs until
+      # it succeeds. That decouples "slow to start" from "hung", which one probe
+      # cannot express — without it, livenessProbe.initialDelaySeconds has to be
+      # sized for the worst cold start, which then delays detection of a genuinely
+      # dead process by the same amount.
+      #
+      # 5s x 30 = 150s budget. MEASURED (P7.4): container start -> Ready was 10.0s
+      # on a warm node, and that was the readiness initialDelay, so real startup is
+      # under 10s. The headroom is for a cold, loaded node pulling a reranker, not
+      # for the normal case.
+      startupProbe:
+        httpGet: { path: /health, port: {{ .Values.api.port }} }
+        periodSeconds: 5
+        failureThreshold: 30
+        timeoutSeconds: 3
+      # initialDelaySeconds intentionally absent on both below: the startupProbe
+      # already holds them off, so an extra delay only slows failure detection.
       livenessProbe:
         httpGet: { path: /health, port: {{ .Values.api.port }} }
-        initialDelaySeconds: 20
         periodSeconds: 15
       readinessProbe:
         httpGet: { path: /ready, port: {{ .Values.api.port }} }
-        initialDelaySeconds: 10
         periodSeconds: 10
       resources: {{- toYaml .Values.api.resources | nindent 8 }}
       securityContext:

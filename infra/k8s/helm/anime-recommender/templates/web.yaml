@@ -7,13 +7,24 @@ metadata:
   namespace: {{ .Values.namespace }}
   labels: {{- include "anime.labels" . | nindent 4 }}
 spec:
+  {{- if not .Values.web.hpa.enabled }}
+  # See api-deployment.yaml: a replicas field managed by BOTH Helm and an HPA
+  # fights on every upgrade. Found in P7.4.
   replicas: {{ .Values.web.replicas }}
+  {{- end }}
   selector:
     matchLabels:
       {{- include "anime.selectorLabels" . | nindent 6 }}
       component: web
   template:
     metadata:
+      annotations:
+      # Rolls the pods when the ConfigMap changes. Without this, editing config
+      # updates the ConfigMap object but leaves running pods on the OLD env —
+      # they only pick it up at the next unrelated restart. Under GitOps that is
+      # the worst version of the bug: ArgoCD reports Synced and Healthy while the
+      # change has not taken effect anywhere. Found in P7.3.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
       labels:
         {{- include "anime.selectorLabels" . | nindent 8 }}
         component: web

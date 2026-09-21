@@ -38,4 +38,17 @@ spec:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities: { drop: ["ALL"] }
+          # REQUIRED, not tuning. isolation.yaml installs a ResourceQuota that
+          # rejects any pod without explicit requests — including this one.
+          #
+          # This stayed hidden because the ordering hides it: as a pre-INSTALL
+          # hook the Job runs before the quota exists and is admitted, so
+          # `helm install` succeeds. On upgrade the quota is already there and the
+          # pre-UPGRADE hook is refused, so the Job never creates a pod, the hook
+          # times out, and the release cannot be upgraded in place at all. Under
+          # GitOps that is every sync after the first.
+          # Found in P7.5 by the first real `helm upgrade` against a live release.
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits:   { memory: 512Mi }
 {{- end }}

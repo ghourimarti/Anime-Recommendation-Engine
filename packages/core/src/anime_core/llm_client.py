@@ -294,6 +294,27 @@ class OpenAIClient(_LangChainClient):
         )
 
 
+# Markers of a STRUCTURED-OUTPUT parse failure, as opposed to any other failure.
+#
+# gpt-oss-20b intermittently emits its tool call under the OpenAI namespace prefix
+# ("functions.Recommendations") which LangChain's parser then rejects, even though the
+# tool is registered as "Recommendations". Measured 2026-09-20: 8 controlled calls with
+# identical input parsed 8/8, so it is a genuine intermittent, not a broken schema.
+#
+# The distinction is the whole point of matching on text rather than exception type.
+# A 429 or a timeout must NEVER be retried here -- llm_sdk_max_retries() documents why
+# max_retries=0 is load-bearing, having measured SDK retries at p95 19.90s / max 24.76s
+# against an 8s NFR. This retries only the failure mode where an immediate second
+# attempt is likely to succeed, and it does it ONCE, with no backoff.
+_PARSE_ERROR_MARKERS = ("unknown tool type", "output_parsing_failure", "failed to parse")
+
+
+def _is_structured_output_parse_error(exc: BaseException) -> bool:
+    """True only for a malformed structured response — never for 429s or timeouts."""
+    text = str(exc).lower()
+    return any(marker in text for marker in _PARSE_ERROR_MARKERS)
+
+
 class TieredLLMClient:
     """Composes default/escalation/fallback into one LLMClient."""
 
@@ -322,6 +343,25 @@ class TieredLLMClient:
         try:
             result = await primary.recommend(query=query, context=context)
         except Exception as exc:
+            # One immediate re-ask of the SAME tier, for parse failures only.
+            #
+            # This is cheaper AND faster than falling through, which is why it is worth
+            # a branch: measured p95 by model on this stack, the primary answers in
+            # 1.28s while the gpt-4o-mini fallback takes 4.90s. So a second Groq attempt
+            # costs less than the fallback it avoids, and bills at the cheaper rate.
+            # Bounded at one attempt with no backoff -- the fallback remains the retry
+            # strategy, this just stops a formatting hiccup from invoking it.
+            if _is_structured_output_parse_error(exc) and primary is not self._fallback:
+                logger.warning(
+                    "primary LLM %s returned unparseable structured output (%s); "
+                    "re-asking it once before falling back",
+                    primary.model,
+                    exc,
+                )
+                try:
+                    return await primary.recommend(query=query, context=context)
+                except Exception as retry_exc:
+                    exc = retry_exc
             logger.warning(
                 "primary LLM %s raised (%s); falling back to %s",
                 primary.model,

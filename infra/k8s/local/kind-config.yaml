@@ -1,0 +1,42 @@
+# kind cluster topology for Phase 7 local validation.
+#
+# WHY THREE NODES AND NOT THE DEFAULT ONE
+# ---------------------------------------
+# P7.5 drills node drain. `kubectl drain` on a single-node cluster has nowhere
+# to reschedule to, so it either no-ops or cordons the only node and takes the
+# workload down — neither of which proves anything. Two workers is the minimum
+# that makes a drain observable: evict from one, watch pods land on the other.
+# Building the right topology now costs ~30s per create; discovering it in P7.5
+# costs a full re-run of the P7.3 acceptance.
+#
+# WHY THE NODE IMAGE IS DIGEST-PINNED
+# -----------------------------------
+# Same reasoning as base-images.lock (P6.1): a tag is a moving target. If the
+# cluster we validate on drifts, "it worked on kind" stops predicting anything.
+#
+# WHY v1.31.0 SPECIFICALLY
+# ------------------------
+# It must match two other pins or the validation is theatre:
+#   - scripts/release/render_verify.sh  K8S_VERSION=1.31.0  (kubeconform schemas)
+#   - infra/terraform/modules/eks       var.kubernetes_version = 1.31
+# Validating manifests against 1.31 schemas and then running them on a different
+# server version is exactly the gap this phase exists to close.
+#
+# TO BUMP: change all three together, in one commit, and re-run `make render-verify`.
+
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: anime-local
+
+nodes:
+  - role: control-plane
+    image: kindest/node:v1.31.0@sha256:25a3504b2b340954595fa7a6ed1575ef2edadf5abd83c0776a4308b64bf47c93
+  - role: worker
+    image: kindest/node:v1.31.0@sha256:25a3504b2b340954595fa7a6ed1575ef2edadf5abd83c0776a4308b64bf47c93
+  - role: worker
+    image: kindest/node:v1.31.0@sha256:25a3504b2b340954595fa7a6ed1575ef2edadf5abd83c0776a4308b64bf47c93
+
+# No extraPortMappings on purpose. values-local.yaml disables Ingress and
+# documents `kubectl port-forward` as the access path; adding host port
+# mappings here would create a second, undocumented way in and let a broken
+# Service definition still look reachable.

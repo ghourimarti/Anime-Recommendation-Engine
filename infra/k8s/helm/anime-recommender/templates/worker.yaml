@@ -26,6 +26,9 @@ spec:
       queue: {{ $queue }}
   template:
     metadata:
+      annotations:
+        # See web.yaml. $root, not $: this block is inside `range`.
+        checksum/config: {{ include (print $root.Template.BasePath "/configmap.yaml") $root | sha256sum }}
       labels:
         {{- include "anime.selectorLabels" $root | nindent 8 }}
         component: worker

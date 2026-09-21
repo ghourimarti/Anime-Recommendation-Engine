@@ -7,11 +7,20 @@
 .PHONY: base-images-refresh base-images-check render-verify package
 .PHONY: eval-compare eval-promote
 .PHONY: load-validate load-smoke load-baseline load-peak load-ramp load-stream
+.PHONY: cache-ls cache-clear cache-clear-all
+.PHONY: llm-off llm-on llm-switch
+.PHONY: inspect inspect-vllm inspect-sglang inspect-selftest inspect-readonly
 .PHONY: audit-secrets audit-deps audit-licenses audit-all
 .PHONY: chaos-llm chaos-pg chaos-net chaos-restore
+.PHONY: k8s-chaos k8s-chaos-pod-kill k8s-chaos-restart k8s-chaos-drain
+.PHONY: tf-check
 .PHONY: backup-dump backup-restore backup-drill
 .PHONY: rtbf
 .PHONY: deploy-stage1-smoke deploy-stage1
+.PHONY: release-verify deploy-stage1-registry
+.PHONY: k8s-up k8s-upv k8s-down k8s-downv k8s-down-soft k8s-ps k8s-verify k8s-ingest k8s-backup-drill
+.PHONY: k8s-stop k8s-start
+.PHONY: deploy-stage2-smoke deploy-stage2
 
 # ╔══════════════════════════════════════════════╗
 # ║  Local stack — how the commands are built    ║
@@ -68,6 +77,10 @@ export COMPOSE_IGNORE_ORPHANS := true
 
 DATA_SERVICES := postgres redis localstack redisinsight
 APP_SERVICES  := sqs-init migrate api web worker
+# `up --build` by default: a local run should never serve stale bytes. Set
+# APP_BUILD= (empty) to run PRE-BUILT images, which is required for digest-pinned
+# refs since Docker cannot tag a built image with a digest. See deploy-stage1-registry.
+APP_BUILD   ?= --build
 OBS_SERVICES  := otel-collector prometheus grafana clickhouse langfuse-postgres langfuse-redis \
                  minio minio-create-bucket langfuse-worker langfuse-web \
                  postgres-exporter langfuse-postgres-exporter redis-exporter \
@@ -134,6 +147,7 @@ help:
 	@echo "  make dev-web    Next.js on :$(WEB_PORT)  (needs an api: make up-app or make dev-api)"
 	@echo "  make worker     run an SQS worker    (WORKER_QUEUE=feedback; starts the data tier)"
 	@echo "  make sqs-init   create local SQS queues + DLQs in LocalStack"
+	@echo "  make token      mint a Clerk dev JWT (300s TTL) for authed probes"
 	@echo ""
 	@echo "── Database ──────────────────────────────────────────────────────────"
 	@echo "  make db-up      start ONLY postgres (waits for healthy)"
@@ -146,6 +160,7 @@ help:
 	@echo "  make test       run all tests"
 	@echo "  make lint | format | typecheck"
 	@echo "  make check      lint + typecheck + test"
+	@echo "  make web-build | web-test | web-check    frontend build / test / typecheck+lint+test"
 	@echo "  make clean      remove caches"
 	@echo ""
 	@echo "── Domain (RAG pipeline; each starts the data tier it needs) ─────────"
@@ -155,17 +170,33 @@ help:
 	@echo "  make eval                 advanced-vs-naive golden eval"
 	@echo "  make eval-compare         gate eval_report.json vs evals/baseline.json"
 	@echo "  make eval-promote         bump evals/baseline.json from eval_report.json"
+	@echo "  make eval-gate            eval + compare against the baseline (CI gate locally)"
+	@echo "  make eval-refusal         refusal / guardrail suite"
 	@echo ""
 	@echo "── Load testing (see tests/load/README.md) ───────────────────────────"
 	@echo "  make load-validate  syntax-check all k6 scripts (no k6 needed)"
 	@echo "  make load-smoke | load-baseline | load-peak | load-ramp | load-stream"
 	@echo ""
 	@echo "── Hardening: audits / chaos / backups / compliance / deploy ─────────"
+	@echo "  make cache-ls | cache-clear | cache-clear-all   answer cache (quota survives)"
+	@echo "  make inspect | inspect-vllm | inspect-sglang    brutal full-stack inspection"
+	@echo "  make inspect-readonly | inspect-selftest        no probes / prove checks can fail"
 	@echo "  make audit-secrets | audit-deps | audit-licenses | audit-all"
 	@echo "  make chaos-llm | chaos-pg | chaos-net | chaos-restore   (chaos-* start the app tier)"
 	@echo "  make backup-dump | backup-restore DUMP=path | backup-drill"
 	@echo "  make rtbf USER=<clerk-user-id> [DRY=0]   RTBF operator path (default dry-run)"
 	@echo "  make deploy-stage1-smoke | deploy-stage1"
+	@echo "  make k8s-up | k8s-upv                     kind: bring up / rebuild+ingest"
+	@echo "  make k8s-down | k8s-downv                 kind: drop release / DELETE cluster"
+	@echo "  make k8s-stop | k8s-start                 kind: pause / resume nodes (also run by make down/up)"
+	@echo "  make release-verify                       cosign-verify the published v0.1.0 artifacts"
+	@echo "  make deploy-stage1-registry               Stage 1 acceptance vs PUBLISHED images"
+	@echo "  make k8s-ps                               kind: cluster, nodes, pods"
+	@echo "  make k8s-verify                           kind: probes / HPA metrics / DNS"
+	@echo "  make k8s-chaos                            kind: pod-kill | restart | drain drills"
+	@echo "  make tf-check                             terraform fmt + validate (no creds needed)"
+	@echo "  make k8s-ingest | k8s-backup-drill        corpus load / in-cluster drill"
+	@echo "  make deploy-stage2-smoke | deploy-stage2"
 	@echo ""
 	@echo "── GPU venue (self-hosted LLM; ONE engine at a time - 12 GB card) ────"
 	@echo "  make venue-status       GPU free VRAM + running venue containers"
@@ -214,18 +245,18 @@ clean:
 # No docker compose calls in this section: every command is a list of steps.
 
 up: VENUE_ROUTING := false
-up: venue-down up-data up-app up-obs wait-api llm-status urls
+up: venue-down up-data up-app up-obs wait-api llm-status k8s-start urls
 	@echo "  First run on this machine? make upv also migrates + ingests the corpus."
 
 up-vllm: VENUE_ROUTING := true
-up-vllm: venue-down-sglang up-data up-app up-obs venue-up-vllm wait-api llm-status urls
+up-vllm: venue-down-sglang up-data up-app up-obs venue-up-vllm wait-api llm-status k8s-start urls
 
 up-sglang: VENUE_ROUTING := true
-up-sglang: venue-down-vllm up-data up-app up-obs venue-up-sglang wait-api llm-status urls
+up-sglang: venue-down-vllm up-data up-app up-obs venue-up-sglang wait-api llm-status k8s-start urls
 
-down: venue-down down-obs down-app down-data net-down
+down: venue-down down-obs down-app down-data net-down k8s-stop
 
-downv: venue-down downv-obs down-app downv-data net-down
+downv: venue-down downv-obs down-app downv-data net-down k8s-downv
 
 # From scratch: wipe → bring everything up → migrate → ingest. Ingest embeds
 # ~268 rows via OpenAI (~$0.01; needs OPENAI_API_KEY).
@@ -233,7 +264,7 @@ upv: downv up db-migrate ingest
 	@echo "  upv complete - full stack up, schema migrated, corpus ingested."
 	@bash scripts/service_ls.sh --urls
 
-ps: ps-stack venue-status
+ps: ps-stack venue-status k8s-ps
 
 # ╔══════════════════════════════════════════════╗
 # ║  Base targets — the only compose calls       ║
@@ -245,7 +276,7 @@ up-data:
 # VENUE_ROUTING is passed on the command line because the api container also
 # reads .env, whose value would otherwise decide for every command.
 up-app: up-data
-	VENUE_ROUTING=$(VENUE_ROUTING) $(COMPOSE) $(APP_FILES) up --build -d $(APP_SERVICES)
+	VENUE_ROUTING=$(VENUE_ROUTING) $(COMPOSE) $(APP_FILES) up $(APP_BUILD) -d $(APP_SERVICES)
 	@echo "  app tier up (venue routing=$(VENUE_ROUTING)): api http://localhost:$(API_PORT) | web http://localhost:$(WEB_PORT)"
 
 up-obs:
@@ -530,6 +561,67 @@ backup-restore: up-data
 backup-drill: up-data
 	bash scripts/backup/drill.sh
 
+
+# ╔══════════════════════════════════════════════╗
+# ║  Answer cache control                        ║
+# ╚══════════════════════════════════════════════╝
+# The cache is a feature worth keeping AND an obstacle to re-testing: the same
+# ── cost kill switch ──────────────────────────────────────────────────────
+# LLM_ENABLED is read from the environment at call time, so turning generation off
+# used to mean editing .env and restarting the container -- during the incident, while
+# it was still spending. These write the Redis key the app checks first, so they take
+# effect on the NEXT request with no deploy. No TTL: a switch that expires turns spend
+# back on unattended. `make llm-switch` says which way it is currently set.
+llm-off:
+	@docker exec anime-redis redis-cli SET killswitch:llm off >/dev/null
+	@echo "  LLM generation DISABLED (redis killswitch:llm=off) - next request serves the popular fallback"
+
+llm-on:
+	@docker exec anime-redis redis-cli DEL killswitch:llm >/dev/null
+	@echo "  LLM generation re-enabled (key removed; LLM_ENABLED in .env decides again)"
+
+llm-switch:
+	@echo "  redis killswitch:llm = $$(docker exec anime-redis redis-cli GET killswitch:llm || echo '<unset>')"
+	@echo "  .env LLM_ENABLED     = $$(docker exec anime-api printenv LLM_ENABLED || echo '<unset>')"
+	@echo "  (redis wins when set; unset or unreachable falls back to LLM_ENABLED)"
+
+# query twice is served from Redis without touching retrieval, the router or any
+# model, so a re-run of the battery proves nothing. These drop ANSWERS only.
+# Never FLUSHALL. `quota:*` is a different prefix and always survives, so rate
+# limits and daily usage are not reset by a clear.
+cache-ls:
+	@uv run python scripts/cache_ctl.py --ls
+
+cache-clear:
+	@uv run python scripts/cache_ctl.py --clear
+
+# Also drops embed:* -- refilling those costs real OpenAI calls, so it is opt-in.
+cache-clear-all:
+	@uv run python scripts/cache_ctl.py --clear --embeddings
+
+# ╔══════════════════════════════════════════════╗
+# ║  Brutal full-stack inspection                ║
+# ╚══════════════════════════════════════════════╝
+# One command, every component. Exit code = number of FAILs, so it gates in CI.
+# Each script clears the answer cache first (see above) or its own probes would be
+# served from Redis and every downstream assertion would read "nothing moved".
+inspect: inspect-$(ENGINE)
+
+inspect-vllm:
+	uv run python scripts/inspect_stack_vllm.py $(ARGS)
+
+inspect-sglang:
+	uv run python scripts/inspect_stack_sglang.py $(ARGS)
+
+# Read-only: sends no queries, costs nothing, safe on a busy stack.
+inspect-readonly:
+	uv run python scripts/inspect_stack_$(ENGINE).py --no-probe
+
+# Negative controls: proves each check is CAPABLE of failing. A check that cannot
+# fail is decoration, and this is what stops the suite rotting into a green wall.
+inspect-selftest:
+	uv run python scripts/inspect_stack_$(ENGINE).py --selftest
+
 # ╔══════════════════════════════════════════════╗
 # ║  RTBF / GDPR Art 17                          ║
 # ╚══════════════════════════════════════════════╝
@@ -547,7 +639,7 @@ rtbf: up-data
 # ╔══════════════════════════════════════════════╗
 # ║  Local Docker deploy                         ║
 # ╚══════════════════════════════════════════════╝
-# Procedure + gate criteria in docs/deploy/stage1-local-docker.md.
+# Procedure + gate criteria in Documents/docs/deploy/stage1-local-docker.md.
 deploy-stage1-smoke: up-app
 	bash scripts/deploy/smoke_local.sh
 
@@ -557,7 +649,203 @@ deploy-stage1-smoke: up-app
 deploy-stage1: VENUE_ROUTING := false
 deploy-stage1: venue-down downv-data up-app wait-api db-migrate ingest deploy-stage1-smoke backup-drill
 	@echo
-	@echo "Stage 1 acceptance complete. See docs/deploy/stage1-local-docker.md §4"
+	@echo "Stage 1 acceptance complete. See Documents/docs/deploy/stage1-local-docker.md §4"
+	@echo "for the gate-criteria checklist; sign off by adding a row to §7."
+
+# --- P7.2.5: the SAME acceptance against the PUBLISHED artifacts -------------
+# Digests, not tags. A tag is a mutable pointer: `v0.1.0` verified today can
+# resolve to different bytes tomorrow, so pinning the digest is what makes this a
+# repeatable gate instead of a snapshot. These four were verified with
+# `cosign verify` + `verify-attestation` (signature AND spdxjson SBOM) against
+# certificate-identity ghourimarti/Anime-Recommendation-Engine at refs/tags/v0.1.0,
+# with 4 negative controls confirming the check can actually fail.
+REL_VERSION       ?= v0.1.0
+REL_GHCR          ?= ghcr.io/ghourimarti/anime-recommender
+REL_API_IMAGE     ?= $(REL_GHCR)/api@sha256:6e5e1701ddfd57df99a2faa1bc02bedc94fc0bbc1aa52285d6f9905cc68afdbc
+REL_WEB_IMAGE     ?= $(REL_GHCR)/web@sha256:9ac358a8641d302280135664fd3c4a5c7af8088c6015b721e667ac6225d13836
+REL_WORKER_IMAGE  ?= $(REL_GHCR)/worker@sha256:50419e92f67cb6fc77ee6de5c3ae46f431d241909cee727012d935b0cafff379
+REL_CHART_REF     ?= ghcr.io/ghourimarti/charts/anime-recommender:0.1.0
+REL_IDENTITY      ?= https://github.com/ghourimarti/Anime-Recommendation-Engine/.github/workflows/release.yml@refs/tags/$(REL_VERSION)
+REL_OIDC_ISSUER   ?= https://token.actions.githubusercontent.com
+
+# Verify provenance BEFORE running anything. Running unverified bytes and checking
+# the signature afterwards inverts the point of signing.
+release-verify:
+	REL_IDENTITY="$(REL_IDENTITY)" REL_OIDC_ISSUER="$(REL_OIDC_ISSUER)" \
+	REL_API_IMAGE="$(REL_API_IMAGE)" REL_WEB_IMAGE="$(REL_WEB_IMAGE)" \
+	REL_WORKER_IMAGE="$(REL_WORKER_IMAGE)" REL_CHART_REF="$(REL_CHART_REF)" \
+	  bash scripts/release/verify_artifacts.sh
+
+# APP_BUILD= is load-bearing: without it `up --build` rebuilds from source and the
+# run silently tests LOCAL bytes while appearing to test the published ones.
+deploy-stage1-registry: release-verify
+	ANIME_API_IMAGE="$(REL_API_IMAGE)" ANIME_WEB_IMAGE="$(REL_WEB_IMAGE)" ANIME_WORKER_IMAGE="$(REL_WORKER_IMAGE)" \
+	  $(MAKE) --no-print-directory up-app APP_BUILD= VENUE_ROUTING=false
+	$(MAKE) --no-print-directory wait-api
+# Self-mint the Clerk JWT, same reasoning as smoke_k8s.sh: dev_token.py issues a
+# 5-minute TTL, so a token exported before the run is dead by the time the smoke
+# runs and every probe 401s as if auth were broken. An explicitly exported
+# K6_AUTH_TOKEN still wins, so CI or a specific identity keeps working.
+	K6_AUTH_TOKEN="$${K6_AUTH_TOKEN:-$$(uv run python scripts/dev_token.py 2>/dev/null | tr -d '\r' | tail -1)}" \
+	  bash scripts/deploy/smoke_local.sh
+	@echo
+	@echo "  Stage 1 acceptance passed against the PUBLISHED $(REL_VERSION) images (digest-pinned)."
+	@echo "  Local images untouched; the next 'make up' rebuilds from source as usual."
+
+# ╔══════════════════════════════════════════════╗
+# ║  Local Kubernetes (kind) deploy              ║
+# ╚══════════════════════════════════════════════╝
+# Procedure + gate criteria in Documents/docs/deploy/stage2-local-k8s.md.
+#
+# Stage 2 runs the SAME images and the SAME chart as Stage 1 — only the substrate
+# changes (kubelet, Services, kube-proxy, PVCs, probes under a real kubelet). The
+# data tier lives in infra/k8s/local/, OUTSIDE the chart, exactly where RDS sits
+# in AWS: keeping it out is what makes P9.5's "same chart, config-only diff"
+# falsifiable rather than decorative.
+# Two knobs, not one, on purpose. deploy-stage2 sets K8S_UP_ARGS as a TARGET-SPECIFIC
+# variable, and in GNU make that beats a command-line assignment — so
+# `make deploy-stage2 K8S_UP_ARGS=--skip-build` is silently ignored and you rebuild
+# ~4GB of images wondering why. K8S_UP_EXTRA is never target-overridden, so it is the
+# one that actually works from the command line:
+#     make deploy-stage2 K8S_UP_EXTRA=--skip-build
+KIND_CLUSTER ?= anime-local
+K8S_NAMESPACE ?= anime-local
+K8S_UP_ARGS ?=
+K8S_UP_EXTRA ?=
+
+# Lifecycle mirrors the compose one above — up / upv / down / downv / ps — so the
+# two substrates are driven the same way and only the substrate differs.
+#
+# THE ONE THING TO KNOW: a kind cluster is Docker containers that OUTLIVE your
+# shell, your terminal and a reboot. It used to survive `make down` as well, so a
+# forgotten cluster quietly held 3 containers and several GB indefinitely. It no
+# longer does - the compose lifecycle now drives it (see "wired into" below).
+# `make k8s-ps` shows whether one is up and `make ps` reports it too, so a stray
+# cluster still cannot stay invisible.
+#
+# WIRED INTO THE COMPOSE LIFECYCLE
+# --------------------------------
+# The trap here is treating "stop" and "delete" as the same act. They are not, and
+# the difference is ~5 minutes plus a 4GB image load:
+#
+#   docker stop    frees CPU and RAM, keeps the cluster and its state, back in
+#                  seconds. Disk still held.
+#   kind delete    frees disk too, but the cluster must be rebuilt from nothing.
+#
+# So `down` stops and `downv` deletes, which is precisely what those two verbs
+# already mean for compose volumes:
+#
+#   make up     -> k8s-start   resume a paused cluster (no-op if none exists)
+#   make down   -> k8s-stop    pause nodes, cluster KEPT
+#   make downv  -> k8s-downv   DELETE the cluster, disk reclaimed
+#
+# ASYMMETRY, ON PURPOSE: after `make downv` there is no cluster, so a later
+# `make up` has nothing to resume and says so. `make up` will not build one -
+# quietly spending 5 minutes and 4GB inside a command you expected to take 30
+# seconds is worse than being told to run `make k8s-upv`. This mirrors compose,
+# where `downv` then `up` gives you containers with an empty database and `upv`
+# is the target that rebuilds the contents.
+#
+# down vs downv follows the compose meaning, NOT "soft vs hard":
+#   k8s-down   keeps the cluster, drops the release + namespace  (cheap, iterate)
+#   k8s-downv  deletes the cluster and everything in it          (reclaim resources)
+# The namespace owns the PVCs, so k8s-down already discards data — same as
+# `docker compose down` stopping containers while `downv` also drops volumes.
+
+k8s-up:
+	bash scripts/deploy/up_local_k8s.sh $(K8S_UP_ARGS) $(K8S_UP_EXTRA)
+
+# From scratch, same shape as `upv`: destroy → up → ingest. Ingest embeds ~268
+# rows via OpenAI (~$0.01; needs OPENAI_API_KEY).
+k8s-upv: K8S_UP_ARGS := --recreate
+k8s-upv: k8s-up k8s-ingest
+	@echo "  k8s-upv complete — cluster rebuilt, chart installed, corpus ingested."
+	@echo "  smoke: make deploy-stage2-smoke   teardown: make k8s-downv"
+
+k8s-down:
+	bash scripts/deploy/down_local_k8s.sh --soft
+
+k8s-downv:
+	bash scripts/deploy/down_local_k8s.sh
+
+# Kept because the Stage 2 procedure doc and older notes reference it by name.
+k8s-down-soft: k8s-down
+
+# Pause / resume WITHOUT destroying the cluster. Run automatically by `make down`
+# and `make up`; both are safe when no cluster exists, which is what lets them sit
+# in the compose lifecycle without making kind a prerequisite for working here.
+k8s-stop:
+	bash scripts/deploy/kind_power.sh stop
+
+k8s-start:
+	bash scripts/deploy/kind_power.sh start
+
+k8s-ps:
+	bash scripts/deploy/status_k8s.sh
+
+# P7.4 assertions: probes firing (not just configured), HPA reading a real
+# metric (not <unknown>), cluster DNS short + FQDN from inside a pod.
+k8s-verify:
+	bash scripts/deploy/verify_k8s.sh
+
+# In-cluster failure drills, measured under load. Deliberately NOT part of
+# deploy-stage2: they are slow and destructive, matching how `make chaos-*`
+# sits outside deploy-stage1.
+k8s-chaos-pod-kill:
+	bash scripts/chaos/k8s_drill.sh pod-kill
+
+k8s-chaos-restart:
+	bash scripts/chaos/k8s_drill.sh rollout-restart
+
+k8s-chaos-drain:
+	bash scripts/chaos/k8s_drill.sh node-drain
+
+k8s-chaos: k8s-chaos-pod-kill k8s-chaos-restart k8s-chaos-drain
+
+# Credential-free Terraform checks (P7.6). Deliberately NOT `terraform plan`:
+# plan needs a real backend (bucket + lock table from infra/terraform/bootstrap)
+# AND valid credentials, so it cannot be a local gate. See
+# Documents/docs/deploy/stage3-terraform-plan.md for the plan-review checklist.
+tf-check:
+	cd infra/terraform && terraform fmt -check -recursive
+	cd infra/terraform/envs/dev && terraform init -backend=false -no-color >/dev/null && terraform validate -no-color
+	@# if/then/else, NOT `cmd && run || echo`. That idiom cannot distinguish "the
+	@# tool failed" from "the tool is missing": a real finding exits 1, the || branch
+	@# echoes, the echo succeeds, and the recipe returns 0. A negative control caught
+	@# this gate reporting clean while trivy was reporting 4 HIGH findings.
+	@if command -v tflint >/dev/null 2>&1; then \
+		cd infra/terraform && tflint --recursive --minimum-failure-severity=warning; \
+	else echo "  SKIP tflint (not installed: scoop install tflint)"; fi
+	@if command -v trivy >/dev/null 2>&1; then \
+		cd infra/terraform && trivy config --quiet --severity HIGH,CRITICAL --exit-code 1 .; \
+	else echo "  SKIP trivy (not installed: scoop install trivy)"; fi
+	@echo "  tf-check: fmt + validate + tflint + trivy clean (plan needs AWS creds - see stage3 doc)"
+
+deploy-stage2-smoke:
+	bash scripts/deploy/smoke_k8s.sh
+
+# Corpus load. Host-side on purpose: the api image ships the ingestion CODE but not
+# data/, and baking a dev fixture into the artifact we sign and scan would be wrong.
+# scripts/deploy/ingest_k8s.sh documents the alternatives considered.
+k8s-ingest:
+	bash scripts/deploy/ingest_k8s.sh
+
+# In-cluster backup+restore drill. NOT `backup-drill`: that one is compose-coupled
+# (depends on up-data, shells `docker compose exec postgres`), so it would drill the
+# WRONG database and pass without testing anything Stage 2 introduced. Stage 2's
+# Postgres is PVC-backed and reached through a Service.
+k8s-backup-drill:
+	bash scripts/backup/drill_k8s.sh
+
+# Full Stage 2 acceptance: cold cluster → images → data tier → chart → ingest →
+# smoke → drill. Deliberately the same shape as deploy-stage1; only the substrate
+# differs, which is what makes the two stages comparable.
+# --recreate makes it genuinely cold; a warm cluster hides migration-ordering and
+# first-boot bugs, which is the class of thing this stage exists to catch.
+deploy-stage2: K8S_UP_ARGS := --recreate
+deploy-stage2: k8s-up k8s-verify k8s-ingest deploy-stage2-smoke k8s-backup-drill
+	@echo
+	@echo "Stage 2 acceptance complete. See Documents/docs/deploy/stage2-local-k8s.md §4"
 	@echo "for the gate-criteria checklist; sign off by adding a row to §7."
 
 # ── GPU venue (S19/S20 — self-hosted LLM serving) ─────────────────────────

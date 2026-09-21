@@ -166,3 +166,91 @@ def test_config_falls_back_to_defaults_when_unset(monkeypatch: pytest.MonkeyPatc
     monkeypatch.delenv("LLM_MAX_INPUT_TOKENS", raising=False)
     assert default_groq_model() == "llama-3.1-8b-instant"
     assert llm_max_input_tokens() == 600
+
+
+# ── structured-output parse failures (I.F9) ──────────────────────────────────
+GROQ_PARSE_ERROR = (
+    "Unknown tool type: 'functions.Recommendations'. Available tools: Recommendations\n"
+    "For troubleshooting, visit: "
+    "https://docs.langchain.com/oss/python/langchain/errors/OUTPUT_PARSING_FAILURE"
+)
+
+
+class FlakyParseClient(SpyClient):
+    """Raises the real Groq parse error for the first `failures` calls, then succeeds."""
+
+    def __init__(self, name: str, *, failures: int, error: str = GROQ_PARSE_ERROR) -> None:
+        super().__init__(name)
+        self._remaining = failures
+        self._error = error
+
+    async def recommend(self, *, query: str, context: str) -> Recommendations:
+        self.recommend_calls += 1
+        if self._remaining > 0:
+            self._remaining -= 1
+            raise ValueError(self._error)
+        return Recommendations(
+            items=[Recommendation(mal_id=1, title=self._name, summary="s", why_match="w")]
+        )
+
+
+@pytest.mark.asyncio
+async def test_parse_failure_re_asks_the_same_tier_before_falling_back() -> None:
+    """Re-asking the primary is cheaper AND faster than the fallback it avoids.
+
+    Measured p95 by model on this stack: the primary answers in 1.28s, the gpt-4o-mini
+    fallback in 4.90s. gpt-oss-20b intermittently emits its tool call under the OpenAI
+    `functions.` namespace prefix, which LangChain rejects — 8 controlled calls with
+    identical input parsed 8/8, so a second immediate attempt usually works.
+    """
+    primary = FlakyParseClient("groq", failures=1)
+    fallback = SpyClient("openai")
+    tiered = _tiered(primary, SpyClient("escalation"), fallback)
+
+    result = await tiered.recommend(query="a short query", context="ctx")
+
+    assert result.items[0].title == "groq"
+    assert primary.recommend_calls == 2, "the primary must be re-asked exactly once"
+    assert fallback.recommend_calls == 0, "the fallback must not be reached"
+
+
+@pytest.mark.asyncio
+async def test_retry_is_bounded_at_one_then_falls_back() -> None:
+    """A persistently broken primary must not be re-asked forever — one attempt, then on."""
+    primary = FlakyParseClient("groq", failures=99)
+    fallback = SpyClient("openai")
+    tiered = _tiered(primary, SpyClient("escalation"), fallback)
+
+    result = await tiered.recommend(query="a short query", context="ctx")
+
+    assert result.items[0].title == "openai"
+    assert primary.recommend_calls == 2, "exactly one retry, not a loop"
+    assert fallback.recommend_calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [
+        "Error code: 429 - {'error': {'message': 'Rate limit reached for model'}}",
+        "Request timed out after 10s",
+        "Connection error",
+    ],
+)
+async def test_non_parse_failures_are_never_retried(error: str) -> None:
+    """THE constraint this fix had to respect.
+
+    llm_sdk_max_retries() sets max_retries=0 deliberately, having measured SDK retries
+    at p95 19.90s / max 24.76s against an 8s NFR — a failing primary retried twice with
+    3s and 11s backoff before the fallback was allowed to run. Retrying a rate limit or
+    a timeout here would walk straight back into that. Only a malformed structured
+    response is worth an immediate second ask.
+    """
+    primary = FlakyParseClient("groq", failures=99, error=error)
+    fallback = SpyClient("openai")
+    tiered = _tiered(primary, SpyClient("escalation"), fallback)
+
+    result = await tiered.recommend(query="a short query", context="ctx")
+
+    assert result.items[0].title == "openai"
+    assert primary.recommend_calls == 1, f"{error[:24]!r} must go straight to the fallback"
