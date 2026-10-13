@@ -58,7 +58,7 @@ local→cloud path (Docker → Helm/EKS → Terraform).
 | 🩹 **Graceful Degradation** | Every failure has a defined fallback: Groq down → OpenAI · both LLMs down → cached "popular" set · pgvector down → Postgres FTS · retrieval empty → curated sample · Redis down → cache-miss pass-through |
 | 📨 **Async Workers (SQS + KEDA)** | Feedback / ingestion (re-embed) / housekeeping queues on SQS with **DLQ + redrive**, **idempotent** at-least-once processing, **KEDA** autoscaling on queue depth |
 | 📊 **Full Observability** | One request = one **OpenTelemetry** trace (trace-id woven into structured JSON logs) → Prometheus/Grafana; **Langfuse** for per-call LLM token/cost/latency; **PII-redacted** logs |
-| 📈 **CI Eval Gate** | IR metrics (NDCG / MRR / Recall / Success @1,@3 + diversity) on a 111-query golden set, with an eval gate (manual/dispatch) that WOULD block regressions
+| 📈 **CI Eval Gate** | IR metrics (NDCG / MRR / Recall / Success @1,@3 + diversity) with an eval gate (manual/dispatch)
 | 🐳 **Deploy-Ready** | Multi-stage **non-root** Docker (×3) · 3-tier compose mesh · **Helm** chart with **Argo Rollouts canary** + KEDA + **External Secrets** · **Terraform** (VPC/EKS/RDS/ElastiCache/S3/SQS/ECR/IRSA) · GitHub Actions with the eval gate |
 
 ---
@@ -526,7 +526,7 @@ account_deletions   audit trail for right-to-be-forgotten requests (migration 00
 | **Answer-quality (RAGAS)** | RAGAS is **wired** (`packages/eval`) but **not run in the committed baseline** (`"ragas": null`) — an honest gap, not a claimed number |
 | **Load** | **Sustained 50 RPS held** — 15,001 requests, ~0 failures (`tests/load/reports/`). *Scope: the sustained scenario exercises the cached/structured path; full-pipeline latency and the peak/ramp/stream scenarios are in [`tests/load/README.md`](tests/load/README.md).* |
 | **Cost** | LLM-dominated; documented estimate **~$0.0004/request** with the tiered gateway (`.env.example`) — the `LLM_PRICING` table + per-tenant `usage_daily` meter make it auditable |
-| **Quality gate** | `make check` = **ruff clean + mypy strict + pytest** green; **CI eval gate** blocks a merge on regression vs baseline **and** requires lift over naive |
+| **Quality gate** | `make check` = **ruff clean + mypy strict + pytest** green; |
 | **Deploy** | **Local Docker verified** (3-tier compose builds + `/health` OK; `make deploy-stage1` acceptance) · **Helm** chart `helm lint` + `kubeconform` clean (dev/staging/prod) · **Terraform** `validate` clean — |
 
 ---
