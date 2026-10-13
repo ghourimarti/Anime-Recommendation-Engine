@@ -113,3 +113,4 @@ backups/*
 
 # Local-only: de-tell / history-rewrite instructions (do not commit)
 GIT_HISTORY_REWRITE.md
+data/
