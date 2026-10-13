@@ -332,6 +332,10 @@ class Auth:
             return tok
         return None
 
+    def invalidate(self) -> None:
+        """Force the next token() to mint fresh. Called when the server says 401."""
+        self._token, self._minted_at = None, 0.0
+
     def headers(self) -> dict[str, str]:
         t = self.token()
         return {"Authorization": f"Bearer {t}"} if t else {}
@@ -388,13 +392,28 @@ class Answer:
 
 
 def ask(query: str, *, timeout: float = 120.0) -> Answer:
+    body = json.dumps({"query": query}).encode()
     code, text = http(
-        f"{API}/v1/recommend",
-        method="POST",
-        timeout=timeout,
-        body=json.dumps({"query": query}).encode(),
-        headers=AUTH.headers(),
+        f"{API}/v1/recommend", method="POST", timeout=timeout, body=body, headers=AUTH.headers()
     )
+    # A 401 is OUR problem, not the app's, and it must not be reported as one.
+    #
+    # Clerk tokens live ~60s. The TTL here is 45s, but a single cold vLLM probe can run
+    # longer than the margin, and a mint that fails returns None -- at which point
+    # headers() sends NO Authorization header at all and the request 401s. Measured
+    # 2026-09-22: the first probe came back `grounded http_401 recs=0`, which reads as a
+    # broken endpoint and then cascades (the cache-repeat check compared a 401 against a
+    # real answer and reported "cache did not serve it"). One forced re-mint and retry
+    # removes the whole class; a second 401 is then genuinely worth reporting.
+    if code == 401:
+        AUTH.invalidate()
+        code, text = http(
+            f"{API}/v1/recommend",
+            method="POST",
+            timeout=timeout,
+            body=body,
+            headers=AUTH.headers(),
+        )
     try:
         return Answer(code, json.loads(text))
     except json.JSONDecodeError:
@@ -538,6 +557,7 @@ def selftest() -> int:
     starved_share_pct = 0.05 / 1.00 * 100  # a stage that is 95% waiting for the loop
     model_bound_share_pct = 2.20 / 2.30 * 100  # what this stack actually measured
     impossible_share_pct = 4.574 / 2.244 * 100  # the 204% reading that exposed the gap
+    barely_impossible_pct = 1.456 / 1.338 * 100  # 109%: the reading that slipped through
     blocked_loop_s = 0.966  # reproduced in test_loop_monitor
     healthy_loop_s = 0.0035  # measured here 2026-09-20
     controls: list[tuple[str, bool, str]] = [
@@ -584,6 +604,14 @@ def selftest() -> int:
             "compute is a SUBSET of wall-clock, so >100% means the two histograms are not "
             "comparable -- measured 204% on 2026-09-20 when old and new le boundaries sat "
             "in the same window. Without this bound the check PASSED on nonsense",
+        ),
+        (
+            "the cost split refuses a ratio only BARELY over 100%",
+            barely_impossible_pct > 100.0,
+            "109% is no more possible than 204%, just a smaller lie. The bound used to "
+            "sit at 110% and printed a green [ ok ] on exactly this reading, while the "
+            "control above passed -- because it only ever tested far from the boundary. "
+            "A negative control has to probe the EDGE or it proves nothing about it",
         ),
         (
             "the loop-lag ceiling rejects a blocked loop",

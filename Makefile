@@ -8,7 +8,7 @@
 .PHONY: eval-compare eval-promote
 .PHONY: load-validate load-smoke load-baseline load-peak load-ramp load-stream
 .PHONY: cache-ls cache-clear cache-clear-all
-.PHONY: llm-off llm-on llm-switch
+.PHONY: llm-off llm-on llm-switch chain-drill
 .PHONY: inspect inspect-vllm inspect-sglang inspect-selftest inspect-readonly
 .PHONY: audit-secrets audit-deps audit-licenses audit-all
 .PHONY: chaos-llm chaos-pg chaos-net chaos-restore
@@ -566,6 +566,28 @@ backup-drill: up-data
 # ║  Answer cache control                        ║
 # ╚══════════════════════════════════════════════╝
 # The cache is a feature worth keeping AND an obstacle to re-testing: the same
+# ── failover drill ────────────────────────────────────────────────────────
+# The only exercise that proves the serving chain is WIRED rather than configured:
+# it blackholes each leg for real, verifies the break landed from inside the container,
+# waits past httpx keepalive so the request cannot ride a pooled socket, and restores
+# /etc/hosts on exit, Ctrl-C or error. Exit code = number of FAILs.
+#
+# VENUE_ROUTING := true is REQUIRED, not cosmetic. Without it `chain-drill: up-app`
+# inherits the `VENUE_ROUTING ?= false` default above and REBUILDS the api with
+# LLM_VENUE_ROUTING_ENABLED=false — so the drill never attempts the venue at all.
+# Two things went wrong because of that, both measured 2026-09-22:
+#   1. Step 2 ("venue blackholed → expect fall-through") printed "THIS STEP PROVES
+#      NOTHING": routing sent the query hosted, so blackholing the venue changed
+#      nothing. The drill was honest about it, which is the only reason it was caught.
+#   2. The drill left the flag off, so the NEXT `make inspect-vllm` reported three
+#      FAILs (routing decisions / venue served / decisions moved) that were pure
+#      config artifact — the checks correctly describing a stack the drill had
+#      mutated. Run 1 had `model=Qwen...ok=3`; run 2 had no Qwen series at all.
+# A drill that silently reconfigures the thing it is drilling is worse than no drill.
+chain-drill: VENUE_ROUTING := true
+chain-drill: up-app
+	bash scripts/venue/chain_drill.sh
+
 # ── cost kill switch ──────────────────────────────────────────────────────
 # LLM_ENABLED is read from the environment at call time, so turning generation off
 # used to mean editing .env and restarting the container -- during the incident, while
@@ -605,7 +627,22 @@ cache-clear-all:
 # One command, every component. Exit code = number of FAILs, so it gates in CI.
 # Each script clears the answer cache first (see above) or its own probes would be
 # served from Redis and every downstream assertion would read "nothing moved".
-inspect: inspect-$(ENGINE)
+# Pick the engine that is actually holding the GPU, at RUN time.
+#
+# Two bugs in one line here before this. `inspect: inspect-$(ENGINE)` expanded
+# $(ENGINE) when make READ the rule, and ENGINE is defined ~250 lines further down,
+# so the prerequisite became the literal `inspect-` and make stopped with
+# "No rule to make target 'inspect-'". Make expands prerequisites immediately;
+# only recipes are deferred. Second, a fixed default pointed the run at vLLM while
+# SGLang held the GPU, so the script correctly FAILED engine identity for a stack
+# that was perfectly healthy -- a red result caused by the launcher, not the app.
+# Detecting it in the recipe fixes both: the variable is expanded late, and the
+# answer comes from docker rather than from a default nobody updated.
+ENGINE_NOW = $$(docker ps --format '{{.Names}}' | grep -qx anime-sglang && echo sglang || echo vllm)
+
+inspect:
+	@engine=$(ENGINE_NOW); echo "  engine on the GPU: $$engine"; \
+	$(MAKE) --no-print-directory inspect-$$engine
 
 inspect-vllm:
 	uv run python scripts/inspect_stack_vllm.py $(ARGS)
@@ -615,12 +652,12 @@ inspect-sglang:
 
 # Read-only: sends no queries, costs nothing, safe on a busy stack.
 inspect-readonly:
-	uv run python scripts/inspect_stack_$(ENGINE).py --no-probe
+	@engine=$(ENGINE_NOW); uv run python scripts/inspect_stack_$$engine.py --no-probe
 
 # Negative controls: proves each check is CAPABLE of failing. A check that cannot
 # fail is decoration, and this is what stops the suite rotting into a green wall.
 inspect-selftest:
-	uv run python scripts/inspect_stack_$(ENGINE).py --selftest
+	@engine=$(ENGINE_NOW); uv run python scripts/inspect_stack_$$engine.py --selftest
 
 # ╔══════════════════════════════════════════════╗
 # ║  RTBF / GDPR Art 17                          ║

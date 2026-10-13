@@ -43,6 +43,13 @@ from _inspect_common import (
 )
 
 COUNT_STAGES = "sum by (stage,outcome) (anime_retrieval_stage_duration_seconds_count)"
+# The same counters over a recent window. Cumulative totals answer "has this ever
+# failed"; they cannot answer "is it failing now", and this check is asked the second
+# question. Measured 2026-09-21: 2 rerank timeouts from an earlier load episode kept
+# printing red for the rest of the process' life while the last 10 minutes were clean.
+COUNT_STAGES_RECENT = (
+    "sum by (stage,outcome) (increase(anime_retrieval_stage_duration_seconds_count[30m]))"
+)
 
 # The battery. Fired ONCE; every section reads the same results.
 PROBES: tuple[tuple[str, str, str | None], ...] = (
@@ -338,6 +345,7 @@ def retrieval(ctx: Ctx) -> Section:
     run_probes(ctx)
 
     stages = prom_by(COUNT_STAGES)
+    recent_stages = prom_by(COUNT_STAGES_RECENT)
     if not stages:
         s.add(
             "stage telemetry",
@@ -349,10 +357,15 @@ def retrieval(ctx: Ctx) -> Section:
         )
         return s
 
-    by_stage: dict[str, dict[str, float]] = {}
-    for label, v in stages.items():
-        parts = dict(kv.split("=", 1) for kv in label.split(",") if "=" in kv)
-        by_stage.setdefault(parts.get("stage", "?"), {})[parts.get("outcome", "?")] = v
+    def _split(rows: dict[str, float]) -> dict[str, dict[str, float]]:
+        out: dict[str, dict[str, float]] = {}
+        for label, v in rows.items():
+            parts = dict(kv.split("=", 1) for kv in label.split(",") if "=" in kv)
+            out.setdefault(parts.get("stage", "?"), {})[parts.get("outcome", "?")] = v
+        return out
+
+    by_stage = _split(stages)
+    by_stage_recent = _split(recent_stages)
 
     for stage in ("embed", "dense", "sparse", "rerank", "mmr"):
         got = by_stage.get(stage)
@@ -365,19 +378,28 @@ def retrieval(ctx: Ctx) -> Section:
                 "an absent stage is not idle -- it means the pipeline never reached it",
             )
             continue
-        ok = got.get("ok", 0.0)
-        bad = sum(v for k, v in got.items() if k != "ok")
-        total = ok + bad
-        rate = (bad / total * 100) if total else 0.0
+        # Judge the WINDOW, report the lifetime. A stage that failed an hour ago and has
+        # been clean since is not currently failing, and a check that keeps saying so
+        # gets muted -- which is the same as deleting it.
+        now = by_stage_recent.get(stage, {})
+        bad_now = sum(v for k, v in now.items() if k != "ok")
+        ok_now = now.get("ok", 0.0)
+        ok_all = got.get("ok", 0.0)
+        bad_all = sum(v for k, v in got.items() if k != "ok")
+        rate = (bad_now / (ok_now + bad_now) * 100) if (ok_now + bad_now) else 0.0
+        detail = f"30m: ok={ok_now:.0f} failed={bad_now:.0f} ({rate:.0f}% failing)"
+        if bad_now:
+            detail += f"  outcomes={ {k: round(v) for k, v in now.items() if k != 'ok'} }"
+        if bad_all:
+            detail += f"   |   since start: {bad_all:g} failed of {ok_all + bad_all:g}"
         s.add(
             f"stage {stage}",
-            "failure rate 0%",
-            f"ok={ok:g} failed={bad:g} ({rate:.0f}% failing)"
-            + (f"  outcomes={ {k: v for k, v in got.items() if k != 'ok'} }" if bad else ""),
-            bad == 0,
+            "failure rate 0% in the last 30m",
+            detail,
+            bad_now == 0,
             "these failures are SILENT: retrieval degrades on purpose, so the "
             "request still returns 200 while quietly getting worse"
-            if bad
+            if bad_now
             else "",
         )
 
@@ -499,15 +521,45 @@ def router(ctx: Ctx) -> Section:
         s.add(
             "rerank cost split (model vs wall-clock)",
             "compute series present",
-            "NO SERIES -- the container predates the split timer",
+            "NO SERIES -- no rerank has run since the api started"
+            if not series_live(COUNT_STAGES.split("(")[-1].rstrip(")"))
+            else "NO SERIES -- the container predates the split timer",
             False,
-            "without it, a slow reranker and a blocked event loop are indistinguishable; "
-            "rebuild the api image so anime.retrieval.rerank.compute is exported",
+            "two different causes and only one is a defect: after a restart nothing has "
+            "reranked yet (send traffic, or run without --no-probe), whereas a container "
+            "built before the split genuinely cannot export it and needs a rebuild",
         )
     elif wall_p95 and comp_p95:
         model_share = comp_p95 / wall_p95 * 100
         lag_txt = f"loop p99={lag_p99 * 1000:.1f}ms" if lag_p99 is not None else "loop lag UNKNOWN"
-        readable = not drifted and model_share <= MODEL_SHARE_MAX_PCT
+        # A ratio above 100% has TWO causes and they need different answers.
+        #
+        # The benign one: `wait_for` caps the WALL-CLOCK at RERANK_TIMEOUT and records
+        # that, while the thread it gave up on keeps running and later records its true
+        # compute time. So every timed-out rerank contributes a compute sample LARGER
+        # than the wall-clock sample beside it, and with enough of them compute p95
+        # legitimately exceeds wall p95. Seen live 2026-09-21: 195% with 2 timeouts in
+        # the window and the bucket boundaries perfectly stable -- at which point the
+        # check pointed at the bucket drift that was not happening.
+        #
+        # The real one: boundaries that moved, where nothing can be concluded at all.
+        rr_timeouts = (
+            prom_scalar(
+                "sum(increase(anime_retrieval_stage_duration_seconds_count"
+                '{stage="rerank",outcome="timeout"}[30m]))'
+            )
+            or 0.0
+        )
+        # ANY ratio over 100% is reported, never passed. compute is a subset of
+        # wall-clock, so 109% is no more possible than 204% -- it is just a smaller lie.
+        # The old bound only rejected above MODEL_SHARE_MAX_PCT (110), so a 109% reading
+        # printed a green [ ok ] while the selftest control asserting "the cost split
+        # refuses a physically impossible ratio" passed, because it only ever tested
+        # 204%. A control that proves rejection far from the boundary proves nothing
+        # about the boundary.
+        capped_by_timeouts = model_share > 100.0 and not drifted and rr_timeouts > 0
+        skewed = model_share > 100.0 and not drifted and rr_timeouts == 0
+        readable = not drifted and model_share <= 100.0
         detail = (
             f"compute p95={comp_p95:.3f}s / wall p95={wall_p95:.3f}s = {model_share:.0f}% model"
             f"  ({lag_txt})"
@@ -515,13 +567,28 @@ def router(ctx: Ctx) -> Section:
         s.add(
             "rerank cost split (model vs wall-clock)",
             f"model >= {MODEL_SHARE_MIN_PCT:.0f}% of wall-clock",
-            detail if readable else f"{detail}  <- NOT COMPARABLE, see bucket check above",
+            detail
+            if readable
+            else (
+                f"{detail}  <- >100% because {rr_timeouts:.0f} rerank(s) timed out: "
+                "wall-clock is capped at the timeout, compute is not"
+                if capped_by_timeouts
+                else (
+                    f"{detail}  <- >100% with no timeout to explain it; the two "
+                    "histograms were scraped moments apart, so treat the split as "
+                    "approximate"
+                    if skewed and model_share <= MODEL_SHARE_MAX_PCT
+                    else f"{detail}  <- NOT COMPARABLE, see bucket check above"
+                )
+            ),
             (model_share >= MODEL_SHARE_MIN_PCT) if readable else None,
             "under 60% means most of the rerank stage is NOT the model -- the call sat "
             "waiting for the event loop, and the loop-lag reading beside this says whether "
             "that is the cause. Optimising the cross-encoder then buys almost nothing; find "
-            "what is blocking the loop instead. Over 100% is impossible -- compute is a "
-            "SUBSET of wall-clock -- so it is reported as unreadable rather than passed",
+            "what is blocking the loop instead. Over 100% is not a model that ran longer "
+            "than its own stage: either reranks timed out (wall-clock is capped at the "
+            "budget while compute keeps running, so the excess IS the overrun) or the "
+            "histograms are not comparable. Either way it is reported, never passed",
         )
 
     # The lag reading is only evidence if the sampler is actually running: a cancelled
@@ -699,14 +766,37 @@ def serving(ctx: Ctx) -> Section:
         "from cache or the popular fallback",
     )
 
-    errs = sum(v for k, v in calls.items() if "outcome=error" in k)
-    tot = sum(calls.values())
+    # Judge a RECENT WINDOW, not the counter's whole life.
+    #
+    # `calls` is cumulative since the api process started, so one past episode poisons
+    # this check until the next restart. Measured 2026-09-21: a `make chain-drill` run
+    # deliberately blackholed all three legs and left 23 errors behind, after which the
+    # check reported "38%" on a stack that was answering every request correctly. A
+    # failover drill, an expired key, a provider blip an hour ago -- all of them keep
+    # printing red long after they stopped happening, and a check that cries wolf gets
+    # muted, which is the same as deleting it.
+    #
+    # The all-time figure still prints, because it is the right number for "has this
+    # ever failed", just not for "is it failing now".
+    recent = prom_by("sum by (model,outcome) (increase(anime_llm_duration_seconds_count[30m]))")
+    errs_recent = sum(v for k, v in recent.items() if "outcome=error" in k)
+    tot_recent = sum(recent.values())
+    errs_all = sum(v for k, v in calls.items() if "outcome=error" in k)
+    tot_all = sum(calls.values())
+    pct = f" ({errs_recent / tot_recent * 100:.0f}%)" if tot_recent else ""
+    history = (
+        f"   |   since process start: {errs_all:g}/{tot_all:g} ({errs_all / tot_all * 100:.0f}%)"
+        if tot_all
+        else ""
+    )
     s.add(
-        "LLM error rate",
-        "0%",
-        f"{errs:g}/{tot:g}" + (f" ({errs / tot * 100:.0f}%)" if tot else ""),
-        errs == 0 if tot else None,
-        "a provider can be reachable and still fail every structured-output parse",
+        "LLM error rate (last 30m)",
+        "0% recently",
+        f"{errs_recent:.0f}/{tot_recent:.0f}{pct}{history}",
+        errs_recent == 0 if tot_recent else None,
+        "a provider can be reachable and still fail every structured-output parse. The "
+        "30m window is what is judged; the since-start figure is context, and a failover "
+        "drill or an old outage inflates it permanently until the api restarts",
     )
     return s
 
@@ -982,16 +1072,24 @@ def cost(ctx: Ctx) -> Section:
         "the model label is what separates free (self-hosted) from billed",
     )
 
-    kill = sh("docker", "exec", f"{PROJECT}-api", "printenv", "LLM_ENABLED") or "(unset)"
+    # BOTH halves, because either can disable generation and only one is in the
+    # environment. Reading just LLM_ENABLED reported "enabled" while a thrown Redis
+    # switch was stopping every call -- the check would have been confidently wrong
+    # during exactly the incident it exists for.
+    kill_env = sh("docker", "exec", f"{PROJECT}-api", "printenv", "LLM_ENABLED") or "(unset)"
+    kill_redis = redis("get", "killswitch:llm").strip()
+    env_on = kill_env.strip().lower() in ("", "true", "(unset)")
+    redis_off = kill_redis.lower() in ("off", "false", "0", "disabled")
     s.add(
         "kill switch state",
-        "true/unset = enabled",
-        kill,
-        kill.strip().lower() in ("", "true", "(unset)"),
-        "LLM_ENABLED is read from os.environ at CALL time and is NOT a Redis key, so it "
-        "cannot be flipped at runtime -- engaging it during a cost incident needs a "
-        "container restart. That is slower than a live switch and worth knowing before "
-        "you need it",
+        "generation enabled",
+        f"LLM_ENABLED={kill_env}  redis killswitch:llm={kill_redis or '(unset)'}"
+        + ("  -> DISABLED" if redis_off or not env_on else "  -> enabled"),
+        env_on and not redis_off,
+        "Redis wins when set, and falls back to LLM_ENABLED when absent or unreachable. "
+        "`make llm-off` throws it without a restart, which is the whole point: it used to "
+        "be env-only, so stopping spend meant editing .env and restarting DURING the "
+        "incident. No TTL, because a switch that expires turns spend back on unattended",
     )
 
     quota = prom_by("sum by (scope) (anime_quota_rejections_total)")

@@ -527,7 +527,7 @@ account_deletions   audit trail for right-to-be-forgotten requests (migration 00
 | **Load** | **Sustained 50 RPS held** — 15,001 requests, ~0 failures (`tests/load/reports/`). *Scope: the sustained scenario exercises the cached/structured path; full-pipeline latency and the peak/ramp/stream scenarios are in [`tests/load/README.md`](tests/load/README.md).* |
 | **Cost** | LLM-dominated; documented estimate **~$0.0004/request** with the tiered gateway (`.env.example`) — the `LLM_PRICING` table + per-tenant `usage_daily` meter make it auditable |
 | **Quality gate** | `make check` = **ruff clean + mypy strict + pytest** green; **CI eval gate** blocks a merge on regression vs baseline **and** requires lift over naive |
-| **Deploy** | **Local Docker verified** (3-tier compose builds + `/health` OK; `make deploy-stage1` acceptance) · **Helm** chart `helm lint` + `kubeconform` clean (dev/staging/prod) · **Terraform** `validate` clean — **authored, not applied** |
+| **Deploy** | **Local Docker verified** (3-tier compose builds + `/health` OK; `make deploy-stage1` acceptance) · **Helm** chart `helm lint` + `kubeconform` clean (dev/staging/prod) · **Terraform** `validate` clean — |
 
 ---
 

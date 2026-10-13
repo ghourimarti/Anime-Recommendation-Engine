@@ -22,6 +22,7 @@ import time
 from anime_core.db.models import AnimeChunk as ORMChunk
 from anime_core.embedder import Embedder
 from anime_core.observability.metrics import record_retrieval_stage
+from anime_core.resilience import RetrievalUnavailableError
 from anime_core.vector_index import PgvectorIndex
 from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -119,8 +120,46 @@ class RetrievalPipeline:
         tenant_id: str | None = None,
     ) -> list[Candidate]:
         # 1) Embed the query once; reused for hybrid retrieval AND MMR relevance.
+        #
+        # GUARDED, and the guard is load-bearing. The embedder is a REMOTE call
+        # (OpenAI text-embedding-3-small) behind a cache, so on a cache MISS an
+        # embedding-provider outage raises right here — before hybrid retrieval, and
+        # before the LLM degradation boundary in RecommendationService.recommend().
+        # Unguarded, that escaped as HTTP 500 for EVERY request.
+        #
+        # Measured 2026-09-22 by `make chain-drill` step 4, which blackholes
+        # api.openai.com — and so takes out the embedder as well as the OpenAI LLM
+        # leg. The consequence was wildly out of proportion to the cause: a
+        # third-party EMBEDDING outage 500'd the whole app while the self-hosted LLM
+        # leg, the Groq leg and the local Postgres corpus were all healthy.
+        #
+        # Translating to RetrievalUnavailableError routes it into the degradation
+        # path that already exists (service.py catches it → popular_fallback), so the
+        # client gets 200 + degraded + real corpus titles instead of a stack trace.
+        #
+        # The cache is why this stayed hidden for so long: a repeated query never
+        # reaches the provider, so only a cold cache key exposes it.
+        #
+        # NOT sparse-only degradation, deliberately. BM25 needs no embedding, so
+        # falling back to sparse would serve better results than the popular floor —
+        # but this embedding is also what MMR scores relevance against (step 5), so
+        # skipping it means reworking diversification too. That is a real improvement
+        # and a bigger change; it is tracked separately rather than smuggled into a
+        # fix whose job is to stop returning 500s.
         started = time.perf_counter()
-        query_embedding = (await self._embedder.embed([query])).embeddings[0]
+        try:
+            query_embedding = (await self._embedder.embed([query])).embeddings[0]
+        except Exception as exc:
+            # Record the failed stage. Otherwise an embedder burning its full timeout
+            # on every request looks FREE on the dashboard — the same reasoning the
+            # dense and sparse legs already apply in HybridRetriever.retrieve().
+            record_retrieval_stage(
+                stage="embed",
+                seconds=time.perf_counter() - started,
+                outcome="timeout" if isinstance(exc, TimeoutError) else "error",
+            )
+            logger.warning("query embedding failed; retrieval cannot proceed", exc_info=True)
+            raise RetrievalUnavailableError("query embedding failed") from exc
         record_retrieval_stage(stage="embed", seconds=time.perf_counter() - started)
 
         # 2) Hybrid retrieval (dense + sparse → RRF) — top hybrid_k chunks.

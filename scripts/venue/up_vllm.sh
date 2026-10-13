@@ -151,6 +151,7 @@ docker run -d \
     --name "$CONTAINER" \
     --gpus all \
     --ipc=host \
+    --init \
     "${NET_ARGS[@]}" \
     -p "${PORT}:8000" \
     -v "${VOLUME}:/root/.cache/huggingface" \

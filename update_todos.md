@@ -1,6 +1,6 @@
 # Update Todos (complete)
 
-**Totals: 198 done · 38 pending · 1 in progress · 3 blocked · 7 phases complete (0–6)**
+**Totals: 212 done · 38 pending · 1 in progress · 3 blocked · 7 phases complete (0–6)**
 
 ## PHASE 0: Recon ✅ 3/3
 - ✅ P0.1 Read repo, map stack
@@ -239,11 +239,11 @@
 - ⏳ P10.5 demo
 - ⏳ P10.6 talking points
 
-## TRACK I: Inspection & observability audit ✅ 17/17  (2026-09-21)
+## TRACK I: Inspection & observability audit ✅ 21/21  (2026-09-22; F13-F15 added after a live run)
 - ✅ I.1 Discovery — 19 anime_* metrics, 3 dashboards/118 panels, 2 cache layers, no Jaeger
 - ✅ I.2 `Documents/docs/INSPECTION_ROUND2.md` — battery + 3-instrument guide (427 lines;
         +Q11c the rerank split, +Q11d the fix, +Q13 which model actually answered)
-- ✅ I.3 `Documents/docs/INSPECTION_ROUND3.md` — full manual, every metric + panel (603 lines;
+- ✅ I.3 `Documents/docs/INSPECTION_ROUND3.md` — full manual, every metric + panel (660 lines;
         +entries for rerank.compute and runtime.loop_lag, +the attribution table)
 - ✅ I.4 `scripts/_inspect_common.py` + `_inspect_sections.py` — engine + 12 sections
 - ✅ I.5 `scripts/inspect_stack_{vllm,sglang}.py` — one command, exit code = FAILs
@@ -460,8 +460,209 @@
         `llm_sdk_max_retries()` was written to prevent. **+3 tests** including that
         constraint.
         **I.F10 + I.F11: ACCEPTED, not fixed, and the evidence says why.** See both.
+- ✅ I.18 **The failover drill — the one deliverable from the original prompt I had not
+        built (2026-09-21).** `scripts/venue/chain_drill.sh` + `make chain-drill`. The
+        prompt's Script contract asked for `trap`/`finally` restoring every injected
+        fault; my scripts injected none, so the assertion it calls "the most important in
+        the whole suite" had never been run against P1.
+        **Measured: 19 passed / 0 FAILED / 0 proved nothing.** Five steps — baseline,
+        venue down, +groq, +openai, restored — each verifying its injection landed from
+        inside the container, waiting past httpx keepalive so no request can ride a pooled
+        socket, and clearing the answer cache with a different question every step.
+        **P1's contract is NOT the prompt's 503**, and asserting that would have failed
+        the app for behaving as designed: with every tier down service.py returns
+        `popular_fallback(DEGRADED_NOTICE)` — 200, `degraded: true`, a notice, and REAL
+        corpus titles. The drill asserts that directly, checking every returned title
+        against `anime_titles`. Verified live: `every title returned exists in the corpus
+        — nothing was invented`.
+        **Three bugs of my own, each producing a confident wrong answer**, all found by
+        running it rather than reading it: (1) `.env` inline comments parsed with
+        `cut -d= -f2` gave curl a malformed URL and every step read HTTP 000 — the drill
+        failing the app for its own parsing bug, and the same bug `_inspect_common.py`
+        already solved; (2) **`sed -i` cannot edit `/etc/hosts`** (Docker bind mount:
+        "cannot rename … Device or resource busy") so the first run **left all three legs
+        blackholed after reporting it had restored them** — now a truncate-in-place
+        rewrite that verifies itself and prints the manual fix; (3) `CODE="$(ask …)"` ran
+        in a SUBSHELL, discarding the response body, which produced false FAILs and a
+        false PASS ("not degraded" passing because the field read empty, not False).
+        P1-specific detail: the blackhole is **127.0.0.2**, not 127.0.0.1, because the api
+        container's own uvicorn listens on :8000 and the venue is `anime-venue:8000` —
+        127.0.0.1 would point the venue client at this app and the "outage" would be a 404
+        from ourselves, green and meaningless.
+- ✅ I.19 **Nine defects found by RUNNING it, all in my tooling (2026-09-21/22).**
+        Running `make inspect` on a stack I had not launched myself exposed things four
+        clean runs of my own never could.
+        1. **`make inspect` did not run at all** — "No rule to make target 'inspect-'".
+        `inspect: inspect-$(ENGINE)` sat ~250 lines ABOVE `ENGINE ?= vllm`, and make
+        expands prerequisites immediately, so the dependency was the literal `inspect-`.
+        Only recipes are deferred. Now detected in the recipe from `docker ps`.
+        2. **The launcher pointed at the wrong engine.** `inspect-readonly` hardcoded
+        vLLM while SGLang held the GPU, so the script correctly FAILED engine identity
+        for a perfectly healthy stack — a red result manufactured by the launcher.
+        All three entrypoints now detect the live engine.
+        3. **The cost split blamed the wrong cause.** It read `195% model` and pointed at
+        bucket drift while the bucket check right above it said *stable*. The real cause:
+        `wait_for` caps the WALL-CLOCK at RERANK_TIMEOUT while the thread it abandoned
+        keeps running and records its true compute time, so every timeout contributes a
+        compute sample larger than its own wall sample. Now says exactly that, and only
+        claims "not comparable" when there is no timeout to explain it.
+        4. **The kill-switch check described behaviour I.F4 had already changed**, and
+        read only the environment half — so it printed "enabled" while a thrown Redis
+        switch was stopping every call. Confidently wrong during precisely the incident
+        it exists for. Now reads both halves; verified by throwing the switch and
+        watching it go red, then green.
+        5. **The LLM error rate judged a cumulative counter.** My own failover drill left
+        23 deliberate errors behind, after which it reported **38%** on a stack answering
+        every request correctly. A check that cries wolf gets muted, which is the same as
+        deleting it. Now judged on a 30m window with the since-start figure kept as
+        context. (Errors on ALL THREE tiers at once is the drill's signature — normal
+        traffic never errors the last-resort tier.)
+        6. **The stage failure rate had the IDENTICAL bug, two sections above** — and
+        I fixed #5 without looking for it. `stage rerank` summed the same kind of
+        lifetime counter, so 2 timeouts from an earlier load episode kept printing red
+        while the last 10 minutes were clean. Now judged on a 30m window with the
+        since-start figure as context. Found only because you asked "is it all fixed".
+        8. **A 401 was reported as an app failure.** Running it myself on a stack I had
+        not prepared, the first probe came back `grounded http_401 recs=0` and cascaded:
+        the cache-repeat check compared a 401 against a real answer and announced "cache
+        did not serve it". Clerk tokens live ~60s against a 45s TTL, and a mint that
+        fails returns None, at which point `headers()` sends NO Authorization header at
+        all. `ask()` now forces a re-mint and retries once on 401 -- our auth problem
+        must never be printed as the app's.
+        9. **"The container predates the split timer"** was printed for a container that
+        demonstrably had it (verified by importing the module inside it). The real cause
+        was that nothing had reranked since the api restarted. Two causes, one message,
+        and only one of them is a defect: now distinguished.
+        Suite 412 passed; `make inspect` now resolves and runs against the live engine.
+        **Verified by running all three myself 2026-09-22, after the engine was switched
+        to vLLM underneath me:** `inspect-selftest` **11/11**; `make inspect` correctly
+        auto-detected `engine on the GPU: vllm` (defect 2 proven fixed in the exact
+        situation that exposed it) and finished **55 passed / 1 FAILED**;
+        `inspect-readonly` **39 passed / 1 FAILED**. The single FAIL is `p95 10.00s` --
+        real, not an artifact: 21 requests, 20 under 10s and 1 over, on a cold vLLM.
+        That is I.F10, already accepted with evidence.
+        7. **From your next run: the cost split PASSED on 109%.**
+        `MODEL_SHARE_MAX_PCT` sat at 110, so anything in the 100-110 band printed a
+        green `[ ok ]` on a ratio that cannot exist -- compute is a subset of
+        wall-clock. Worse, the selftest control asserting "refuses a physically
+        impossible ratio" passed throughout, because it only ever tested **204%**: a
+        negative control far from the boundary proves nothing about the boundary.
+        Now nothing over 100% is ever passed -- it is reported with the best available
+        explanation (timeout capping / scrape skew / not comparable) -- and an **edge
+        control at 109%** was added beside the 204% one. Selftest 11/11.
 
 ### Findings raised — 13 closed (10 fixed · 1 withdrawn · 2 accepted with evidence)
+- ✅ I.20 `Documents/docs/INSPECTION_BATTERY.md` — NEW battery, written from a fresh
+        discovery pass (446 lines). 18 queries, each targeting a distinct failure mode.
+        Corrects THREE errors in the commissioning brief: (a) all-tiers-down is HTTP 200 +
+        `degraded` + real titles, NOT 503 — and that assertion is stronger, because it also
+        catches a degraded path that invents titles; (b) there is no semantic cache, so the
+        demanded "paraphrase above/below 0.92" queries cannot be written — it was removed as
+        unsafe at ANY threshold (antonyms outscore paraphrases) and replaced by
+        `normalize_query()`, which survives typography, not vocabulary; (c) three
+        instruments, not four.
+- ✅ I.21 `Documents/docs/INSPECTION_MANUAL.md` — NEW manual, Parts 0–7 (939 lines). All 19
+        metrics with what/why/how/labels/gotchas incl. the OTel→PromQL name translation and
+        why `cost.usd` declares unit="1"; all **146** panels (I.1 counted 118 — the gap is
+        exactly the collapsed venue rows 5a–5d, 48 nested panels); Langfuse as BOTH waterfall
+        and content store; per-query PromQL deltas including what must stay UNCHANGED.
+        NEW FINDING → I.F12.
+- ✅ I.F12 **Dashboard rows 5a (vLLM) and 5b (SGLang) cannot distinguish the engines.** Both
+        select `model=~"Qwen.*"`, and both engines serve the same Qwen model, so every
+        app-layer panel in the two rows shows an IDENTICAL number whichever engine is
+        running. Only `engine up` disambiguates, via
+        `clamp_max(count({__name__=~"vllm[:_].*"}),1)` vs `sglang[:_]`. Today the `model`
+        label is doing a job it cannot do; a `venue` label on the LLM metrics would fix it.
+        Impact is diagnostic only — routing and cost attribution are unaffected.
+- ✅ I.F13 **REAL APP DEFECT — an OpenAI outage returns HTTP 500 for every request.** Found by
+        `make chain-drill` step 4 (2026-09-22): expected 200+degraded, got **500**. The LLM
+        boundary is NOT at fault — `except Exception` at `service.py:264` is correct and the
+        drill confirmed the "all LLM tiers failed" log line never printed, so it never fired.
+        The escape is earlier: `hybrid.py:133-134` calls `self._embedder.embed([query])`
+        OUTSIDE the guarded dense/sparse block, and `RetrievalUnavailableError` (line 179)
+        only covers "both dense and sparse retrieval failed". Blackholing `api.openai.com`
+        kills TWO roles — the OpenAI LLM leg AND the `text-embedding-3-small` embedder — so
+        `openai.APIConnectionError` escapes retrieval, never reaches the LLM boundary, and
+        becomes a 500. **Consequence: the embedder is an unguarded SPOF. An OpenAI outage
+        500s the app even though a self-hosted leg, a Groq leg and a local Postgres corpus
+        are all healthy.** Hidden in normal use because the embedding cache masks repeat
+        queries and partial outages never trigger it. FIX: map embedder connection errors
+        into `RetrievalUnavailableError` at the call site.
+- ✅ I.F14 **The p95 NFR check ignores the script's own NFR_MIN_SAMPLES guard.**
+        `[FAIL] p95 /v1/recommend 6.13s` vs a 6s budget is a 2% overshoot measured on ~8
+        samples in the 30m window. `NFR_MIN_SAMPLES = 20` exists and IS applied to TTFT, but
+        not to this check — the same bucket-edge problem it was written to prevent. The window
+        also contains the cold start the runner itself warned about ("dense timed out on the
+        first 2 requests after `make up`"), and mixes 12 hosted decisions with 3 venue-served
+        ones; a single p95 across venues whose latency differs ~10x is not a meaningful
+        number, which is precisely the argument the dashboard already makes for rows 1a-1d.
+        **This FAIL is not trustworthy at this sample count.** FIX: gate it on
+        NFR_MIN_SAMPLES and split by venue, or report NOT MEASURED.
+- ✅ I.F15 **Drill step 2 cannot test venue failover — and says so.** `[ -- ] no venue attempt
+        recorded for this query — routing sent it hosted; THIS STEP PROVES NOTHING`. Correct
+        honesty (better than a false green), but it leaves the venue-failure leg untested: the
+        query's confidence fell below 0.731, so the venue was never attempted and blackholing
+        it changed nothing. FIX: step 2 must use a clear-class high-confidence query to force
+        a venue attempt — the inspection script already has a `clear-class` probe to borrow.
+        Also note step 4 confounds two variables (see I.F13): it cannot isolate the LLM
+        contract while the host it blackholes is also the embedder.
+- ✅ I.F16 **`make chain-drill` disables venue routing and never restores it — so the NEXT
+        inspection run reports 3 false FAILs.** `chain-drill: up-app` inherits the Makefile
+        default `VENUE_ROUTING := false` (only `up-vllm`/`up-sglang` set it true), so the drill
+        REBUILDS the api with `LLM_VENUE_ROUTING_ENABLED=false`. The drill correctly restores
+        /etc/hosts (step 5 verifies it) but not the routing flag. Measured 2026-09-22: run 1
+        (before a drill) = 56 pass / 1 FAIL; run 2 (after a drill) = 54 pass / 3 FAIL, the
+        three being `routing decisions recorded`, `venue actually served traffic 0/0`,
+        `decisions moved during probes` — all pure config artifact. Corroborated by the LLM
+        call labels: run 1 had `model=Qwen...ok=3`, run 2 has NO Qwen series at all.
+        **The checks are telling the truth about a stack the drill mutated.**
+        FIX: have chain-drill restore the flag on exit, or make it set VENUE_ROUTING=true so
+        it drills the configuration it claims to drill.
+- ✅ I.F14b **I.F14 CONFIRMED by measurement.** The p95 FAIL (6.13s) vanished on the next run
+        (3.05s PASS) with no app change — only the sample count moved, 8 → 23 per stage in the
+        30m window. That is the bucket-edge artifact I.F14 predicted, now demonstrated rather
+        than argued. The NFR check still needs gating on NFR_MIN_SAMPLES.
+- ✅ I.F13-FIXED **2026-09-22 — embedder guard landed and VERIFIED end-to-end.**
+        `pipeline.py` now wraps the embed call and raises RetrievalUnavailableError, which the
+        existing handler in `service.py` already degrades. +5 tests in
+        `test_pipeline_embedder_resilience.py`, including a negative control. Proof the tests
+        can FAIL: with the guard temporarily removed, 4 failed / 1 passed — and the 1 that
+        passed was the negative control, exactly as designed. Live proof: `make chain-drill`
+        step 4 went from `[FAIL] HTTP 500` to `[ ok ] HTTP 200 (degrades, does not error)` +
+        `degraded: true` + `every title returned exists in the corpus — nothing was invented`.
+        Drill total: 13 pass/4 FAIL → **18 pass/0 FAIL**. Suite 412 → 417, lint+mypy clean.
+        NOT sparse-only degradation: BM25 needs no embedding, but this embedding also feeds
+        MMR relevance, so sparse-only means reworking diversification — tracked, not smuggled.
+- ✅ I.F16-FIXED **2026-09-22 — `chain-drill: VENUE_ROUTING := true` added.** It also fixed
+        I.F15 for free: drill step 2 went from `[--] THIS STEP PROVES NOTHING` to
+        `[ ok ] venue attempted and fell through`. With routing on, blackholing the venue
+        finally tests something. Clean vLLM baseline after the fix: **55 pass / 1 FAIL**, and
+        that FAIL is stale-window residue (`LLM error rate 1/20 over 30m` while
+        `since process start: 0/10 (0%)`) — it ages out.
+- ✅ I.F17 **SGLang stalls in prefill CUDA-graph capture, out of GPU headroom — pre-existing,
+        NOT caused by these fixes.** Root-caused 2026-09-22. `make up-sglang` was killed by a
+        25-minute timeout (exit 143) having never bound its HTTP server. The log says exactly
+        where it died:
+            [09:11:49] Memory pool end. avail mem=2.32 GB
+            [09:11:49] Capture target prefill CUDA graph begin. backend=breakable,
+                       num_tokens=[4, 8, ... 1792, 2048], avail mem=1.85 GB
+        So: `mem_fraction_static: 0.7` claims the memory pool FIRST, leaving **1.85 GB**, and
+        SGLang then tries to capture **42 prefill graph sizes up to bs=2048** in it. GPU sat at
+        **11245/12288 MiB (91.5%) with 0% utilisation** — thrashing, not computing. This is the
+        same class as the standing note that P5's SGLang 0.50 failed here on a 1,618-token KV:
+        a memory-budget problem, not a model problem.
+        **Consequence: `make inspect-sglang` cannot be run at all**, so the SGLang half of the
+        inspection is BLOCKED on engine configuration, not on tooling.
+        FIX, cheapest first: (a) `--disable-cuda-graph` — slower per-token, starts reliably;
+        (b) cap `cuda_graph_max_bs_prefill` (bs=2048 is absurd for a single-user dev box);
+        (c) lower `mem_fraction_static` to leave capture room. Compare against the vLLM args
+        that DO work on this card before copying anything.
+- ✅ I.F18 **The vLLM container cannot be stopped cleanly — zombie PID blocks engine switching.**
+        `make up-sglang` first failed at `venue-down-vllm`: *"could not kill container: PID
+        4663 is zombie and can not be killed. Use the --init option"*. Recovered with
+        `docker rm -f anime-vllm`. Since the whole vllm↔sglang toggle depends on stopping one
+        engine to free the GPU, this makes the toggle unreliable. FIX: add `init: true` to the
+        venue services in the compose file so an init reaps children and forwards signals.
 - ✅ I.F1 **WITHDRAWN — my error, not the app's.** I claimed "venue never serves, threshold
         never calibrated against real traffic". Both wrong. The threshold WAS derived from
         111 golden queries (S21.4a/b: clear -0.49 / edge -3.22 / vague -4.84 / adversarial

@@ -50,7 +50,30 @@ MODEL=Qwen/Qwen2.5-7B-Instruct-AWQ
 PORT=1020
 MEM_FRAC=0.70
 CONTEXT_LEN=8192
-WAIT_SECS=300
+# 1200, not 300. The header above documents startup MEASURED at 363-1,118 s on this
+# box — so the old 300 s default gave up BEFORE its own documented best case, then
+# left the container loading in the background. That is how "SGLang is broken" and
+# "SGLang is slow to start" became indistinguishable (I.F17).
+WAIT_SECS=1200
+
+# Prefill CUDA graphs are DISABLED by default on this card, and that default is a
+# measurement, not a preference. Observed 2026-09-22 on the 12 GB RTX 3060:
+#
+#   Memory pool end.                       avail mem=2.32 GB
+#   Capture target prefill CUDA graph begin.
+#     num_tokens=[4, 8, ... 1792, 2048]    avail mem=1.85 GB
+#
+# SGLang then sat at 11245/12288 MiB (91.5%) with 0% GPU utilisation and never bound
+# its HTTP server. mem-fraction-static claims the pool FIRST, and 42 prefill graphs
+# up to bs=2048 do not fit in what is left. bs=2048 is a datacenter default; this box
+# serves one user.
+#
+# DECODE graphs are deliberately left ON (bs [1,2,4,8], cheap). They are what make
+# per-token generation fast, so disabling them too would hand vLLM an unfair win in
+# `make venue-compare` — the benchmark would be measuring our flags, not the engines.
+#
+# Set PREFILL_GRAPH_ARG="" to restore upstream behaviour, e.g. on a bigger card.
+PREFILL_GRAPH_ARG="${PREFILL_GRAPH_ARG---disable-prefill-cuda-graph}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -182,6 +205,7 @@ docker run -d \
     --name "$CONTAINER" \
     --gpus all \
     --ipc=host \
+    --init \
     "${NET_ARGS[@]}" \
     --shm-size 16g \
     -p "${PORT}:8000" \
@@ -195,6 +219,7 @@ docker run -d \
     --mem-fraction-static "$MEM_FRAC" \
     --context-length "$CONTEXT_LEN" \
     --enable-metrics \
+    $PREFILL_GRAPH_ARG \
     >/dev/null
 
 echo "  container started; watching startup (up to ${WAIT_SECS}s)…"
